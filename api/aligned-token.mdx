@@ -1,0 +1,323 @@
+---
+title: 'AlignedToken'
+description: 'Token-level transcription with precise timing'
+icon: 'text'
+---
+
+`AlignedToken` is a dataclass that represents a single token (word or subword) in the transcription with precise timing and confidence information.
+
+## Class Definition
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Access tokens from sentences
+for sentence in result.sentences:
+    for token in sentence.tokens:
+        print(f"{token.start:.2f}s: {token.text}")
+
+# Or access all tokens directly
+for token in result.tokens:
+    print(f"{token.start:.2f}s: {token.text}")
+```
+
+## Fields
+
+<ResponseField name="id" type="int">
+  The token ID in the model's vocabulary. This is the numeric identifier for the token.
+  
+  **Example:** `142`
+</ResponseField>
+
+<ResponseField name="text" type="str">
+  The text representation of the token. May be a complete word, partial word (subword), or punctuation.
+  
+  **Example:** `"Hello"`, `" world"`, `"."`, `"ing"`
+</ResponseField>
+
+<ResponseField name="start" type="float">
+  Start time of the token in seconds (relative to the beginning of the audio).
+  
+  **Example:** `1.23`
+</ResponseField>
+
+<ResponseField name="duration" type="float">
+  Duration of the token in seconds.
+  
+  **Example:** `0.45`
+</ResponseField>
+
+<ResponseField name="confidence" type="float" default="1.0">
+  Confidence score for this token (0.0 to 1.0). Computed using an entropy-based method from the model's output probabilities.
+  
+  Higher values indicate higher confidence in the transcription.
+  
+  **Example:** `0.92`
+</ResponseField>
+
+<ResponseField name="end" type="float" default="0.0">
+  End time of the token in seconds. Automatically computed as `start + duration` in `__post_init__`.
+  
+  **Example:** `1.68`
+</ResponseField>
+
+---
+
+## Automatic Computation
+
+When an `AlignedToken` is created, the `end` field is automatically computed:
+
+```python
+end = start + duration
+```
+
+You should not manually set the `end` field; it is always derived from `start` and `duration`.
+
+---
+
+## Examples
+
+### Basic Token Access
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Iterate through all tokens
+for token in result.tokens:
+    print(f"ID: {token.id}")
+    print(f"Text: '{token.text}'")
+    print(f"Time: {token.start:.3f}s - {token.end:.3f}s ({token.duration:.3f}s)")
+    print(f"Confidence: {token.confidence:.2%}")
+    print()
+```
+
+### Word-Level Timestamps
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+print("Word-level timestamps:")
+for token in result.tokens:
+    timestamp = f"[{token.start:.2f}s - {token.end:.2f}s]"
+    print(f"{timestamp:25} {token.text:20} (confidence: {token.confidence:.2%})")
+```
+
+### Filter Low Confidence Tokens
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Find tokens with low confidence
+low_confidence_threshold = 0.7
+
+print("Tokens with low confidence:")
+for token in result.tokens:
+    if token.confidence < low_confidence_threshold:
+        print(f"  {token.start:.2f}s: '{token.text}' (confidence: {token.confidence:.2%})")
+```
+
+### Token Duration Analysis
+
+```python
+from parakeet_mlx import from_pretrained
+import statistics
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Analyze token durations
+durations = [token.duration for token in result.tokens]
+
+print(f"Total tokens: {len(result.tokens)}")
+print(f"Average duration: {statistics.mean(durations):.3f}s")
+print(f"Median duration: {statistics.median(durations):.3f}s")
+print(f"Min duration: {min(durations):.3f}s")
+print(f"Max duration: {max(durations):.3f}s")
+
+# Find longest tokens
+longest_tokens = sorted(result.tokens, key=lambda t: t.duration, reverse=True)[:5]
+print("\nLongest tokens:")
+for token in longest_tokens:
+    print(f"  {token.duration:.3f}s: '{token.text}'")
+```
+
+### Search for Specific Words
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+def find_word(tokens, query):
+    """Find all occurrences of a word in the transcription"""
+    matches = []
+    for token in tokens:
+        if query.lower() in token.text.lower():
+            matches.append(token)
+    return matches
+
+# Find all instances of "machine"
+matches = find_word(result.tokens, "machine")
+
+print(f"Found {len(matches)} instances:")
+for token in matches:
+    print(f"  {token.start:.2f}s: '{token.text}'")
+```
+
+### Generate Karaoke-Style Subtitles
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(max_words=10, max_duration=5.0)
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+
+print("=== Karaoke Subtitles (ASS format) ===")
+for i, sentence in enumerate(result.sentences, 1):
+    # Create word-by-word highlighting effect
+    effects = []
+    for j, token in enumerate(sentence.tokens):
+        start_ms = int(token.start * 100)
+        end_ms = int(token.end * 100)
+        
+        # Build text with karaoke effect
+        before = "".join(t.text for t in sentence.tokens[:j])
+        current = token.text
+        after = "".join(t.text for t in sentence.tokens[j+1:])
+        
+        effects.append(f"{{{\\k{end_ms-start_ms}}}{current}")
+    
+    line_start = format_ass_time(sentence.start)
+    line_end = format_ass_time(sentence.end)
+    
+    print(f"Dialogue: 0,{line_start},{line_end},Default,,0,0,0,,", end="")
+    print("".join(effects))
+
+def format_ass_time(seconds):
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    centisecs = int((seconds % 1) * 100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centisecs:02d}"
+```
+
+### Calculate Speaking Rate
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Calculate speaking rate in tokens per second
+if result.tokens:
+    total_time = result.tokens[-1].end - result.tokens[0].start
+    token_rate = len(result.tokens) / total_time
+    
+    print(f"Total tokens: {len(result.tokens)}")
+    print(f"Total time: {total_time:.2f}s")
+    print(f"Token rate: {token_rate:.2f} tokens/second")
+    
+    # Estimate words (tokens with leading space)
+    word_tokens = [t for t in result.tokens if t.text.startswith(" ")]
+    word_rate = len(word_tokens) / total_time * 60
+    
+    print(f"Estimated words per minute: {word_rate:.1f}")
+```
+
+### Export to JSON
+
+```python
+import json
+from dataclasses import asdict
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Export tokens to JSON
+tokens_data = [
+    {
+        "id": token.id,
+        "text": token.text,
+        "start": token.start,
+        "end": token.end,
+        "duration": token.duration,
+        "confidence": token.confidence
+    }
+    for token in result.tokens
+]
+
+with open("tokens.json", "w") as f:
+    json.dump(tokens_data, f, indent=2)
+
+print(f"Exported {len(tokens_data)} tokens to tokens.json")
+```
+
+### Detect Pauses Between Tokens
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Find significant pauses
+min_pause = 1.0  # seconds
+
+print("Significant pauses:")
+tokens = result.tokens
+for i in range(len(tokens) - 1):
+    gap = tokens[i + 1].start - tokens[i].end
+    if gap >= min_pause:
+        print(f"  {gap:.2f}s pause at {tokens[i].end:.2f}s")
+        print(f"    Before: '{tokens[i].text}'")
+        print(f"    After: '{tokens[i + 1].text}'")
+```
+
+---
+
+## Confidence Calculation
+
+The confidence score is computed using an entropy-based method:
+
+```python
+# For each token, the model outputs a probability distribution
+# Confidence is calculated as:
+confidence = 1.0 - (entropy / max_entropy)
+
+# Where:
+# entropy = -sum(p * log(p)) for all probabilities
+# max_entropy = log(vocabulary_size)
+```
+
+This means:
+- **1.0**: Model is completely certain (zero entropy)
+- **0.5**: Model is moderately uncertain
+- **0.0**: Maximum uncertainty (uniform distribution)
+
+---
+
+## Related
+
+- [AlignedSentence](/api/aligned-sentence) - Sentence objects containing tokens
+- [AlignedResult](/api/aligned-result) - Top-level result with access to all tokens
+- [SentenceConfig](/api/sentence-config) - Configure how tokens are grouped into sentences

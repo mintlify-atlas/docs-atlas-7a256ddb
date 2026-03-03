@@ -1,0 +1,928 @@
+---
+title: Timestamps & Alignment
+description: Understanding how Parakeet MLX computes word-level timestamps and aligns text to audio
+---
+
+## Overview
+
+Parakeet MLX provides word-level timestamp alignment, tracking when each token starts and ends in the audio. The alignment system produces hierarchical results with token and sentence boundaries.
+
+<CardGroup cols={3}>
+  <Card title="Tokens" icon="font" href="#aligned-tokens">
+    Word-level with start/end/duration
+  </Card>
+  <Card title="Sentences" icon="paragraph" href="#aligned-sentences">
+    Auto-segmented with aggregate timing
+  </Card>
+  <Card title="Results" icon="file-lines" href="#aligned-results">
+    Complete transcription with hierarchy
+  </Card>
+</CardGroup>
+
+## Data Structures
+
+### AlignedToken
+
+Represents a single word or subword token with precise timing:
+
+```python
+# From alignment.py:6-16
+@dataclass
+class AlignedToken:
+    id: int              # Token ID in vocabulary
+    text: str            # Decoded text (e.g., " hello")
+    start: float         # Start time in seconds
+    duration: float      # Duration in seconds
+    confidence: float    # Confidence score (0.0 to 1.0)
+    end: float = 0.0     # Computed as start + duration
+    
+    def __post_init__(self):
+        self.end = self.start + self.duration
+```
+
+<ParamField path="id" type="int">
+  Token ID from the model's vocabulary (0 to vocab_size-1)
+</ParamField>
+
+<ParamField path="text" type="str">
+  Decoded text representation. May include leading/trailing spaces for subword tokens.
+  
+  Examples:
+  - `" Hello"` - word with leading space
+  - `"world"` - word without space
+  - `"."` - punctuation
+</ParamField>
+
+<ParamField path="start" type="float">
+  Start time in seconds from beginning of audio
+</ParamField>
+
+<ParamField path="duration" type="float">
+  Token duration in seconds. Computed differently by each model:
+  - **TDT**: Explicitly predicted (0-4 frames typically)
+  - **RNNT**: Fixed at 1 frame
+  - **CTC**: Inferred from frame repetitions
+</ParamField>
+
+<ParamField path="confidence" type="float">
+  Confidence score from 0.0 (uncertain) to 1.0 (certain), computed using entropy:
+  ```python
+  confidence = 1.0 - (entropy / max_entropy)
+  ```
+</ParamField>
+
+### AlignedSentence
+
+Groups tokens into sentence-level segments:
+
+```python
+# From alignment.py:19-35
+@dataclass
+class AlignedSentence:
+    text: str                    # Full sentence text
+    tokens: list[AlignedToken]   # Constituent tokens
+    start: float = 0.0           # Sentence start (from first token)
+    end: float = 0.0             # Sentence end (from last token)
+    duration: float = 0.0        # Sentence duration
+    confidence: float = 1.0      # Aggregate confidence
+    
+    def __post_init__(self):
+        self.tokens = list(sorted(self.tokens, key=lambda x: x.start))
+        self.start = self.tokens[0].start
+        self.end = self.tokens[-1].end
+        self.duration = self.end - self.start
+        
+        # Geometric mean of token confidences
+        confidences = np.array([t.confidence for t in self.tokens])
+        self.confidence = float(np.exp(np.mean(np.log(confidences + 1e-10))))
+```
+
+<Info>
+Sentence confidence uses geometric mean instead of arithmetic mean. This makes the score more sensitive to low-confidence tokens - if any token has very low confidence, the sentence confidence will be low.
+</Info>
+
+### AlignedResult
+
+Top-level transcription result:
+
+```python
+# From alignment.py:38-48
+@dataclass
+class AlignedResult:
+    text: str                        # Full transcription
+    sentences: list[AlignedSentence] # Sentence segments
+    
+    def __post_init__(self):
+        self.text = self.text.strip()
+    
+    @property
+    def tokens(self) -> list[AlignedToken]:
+        # Flatten all tokens from all sentences
+        return [token for sentence in self.sentences for token in sentence.tokens]
+```
+
+## Time Ratio Calculation
+
+Timestamps are computed by converting encoder frame indices to seconds using the **time ratio**:
+
+```python
+# From parakeet.py:108-113
+@property
+def time_ratio(self) -> float:
+    return (
+        self.encoder_config.subsampling_factor
+        / self.preprocessor_config.sample_rate
+        * self.preprocessor_config.hop_length
+    )
+```
+
+<Tabs>
+  <Tab title="Formula">
+    ```
+    time_ratio = (subsampling_factor * hop_length) / sample_rate
+    
+    timestamp = frame_index * time_ratio
+    ```
+    
+    **Why this works:**
+    1. Audio is converted to mel frames with `hop_length` samples between frames
+    2. Encoder subsamples mel frames by `subsampling_factor` (typically 8)
+    3. Each encoder frame represents `subsampling_factor * hop_length` audio samples
+    4. Divide by `sample_rate` to convert samples to seconds
+  </Tab>
+  
+  <Tab title="Example Calculation">
+    Given typical Parakeet configuration:
+    - `sample_rate = 16000` Hz
+    - `hop_length = 160` samples (10ms mel frames)
+    - `subsampling_factor = 8` (encoder downsamples 8:1)
+    
+    ```python
+    time_ratio = (8 * 160) / 16000 = 1280 / 16000 = 0.08 seconds
+    ```
+    
+    Each encoder frame represents **80 milliseconds** of audio.
+    
+    If a token starts at encoder frame 15:
+    ```python
+    start = 15 * 0.08 = 1.2 seconds
+    ```
+  </Tab>
+  
+  <Tab title="Resolution">
+    The time resolution depends on the subsampling factor:
+    
+    | Subsampling | Hop Length | Sample Rate | Time Ratio | Resolution |
+    |-------------|------------|-------------|------------|------------|
+    | 4 | 160 | 16000 | 0.04 | 40ms |
+    | 8 | 160 | 16000 | 0.08 | 80ms |
+    | 8 | 320 | 16000 | 0.16 | 160ms |
+    
+    <Note>
+    Higher subsampling factors reduce computational cost but lower timestamp precision. TDT's duration modeling partially compensates for this.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Model-Specific Alignment
+
+### TDT Alignment
+
+TDT explicitly predicts token durations during decoding:
+
+```python
+# From parakeet.py:592-600
+hypothesis.append(
+    AlignedToken(
+        int(pred_token),
+        start=step * self.time_ratio,                    # Current frame
+        duration=self.durations[decision] * self.time_ratio,  # Predicted duration
+        confidence=confidence,
+        text=tokenizer.decode([pred_token], self.vocabulary),
+    )
+)
+```
+
+<Tabs>
+  <Tab title="Duration Predictions">
+    TDT models predict discrete durations from a fixed set:
+    
+    ```python
+    # From parakeet.py:277
+    self.durations = args.decoding.durations  # Typically [0, 1, 2, 3, 4]
+    ```
+    
+    | Duration | Meaning | Encoder Frames | Time (at 80ms/frame) |
+    |----------|---------|----------------|----------------------|
+    | 0 | Emit without advancing | 0 | 0ms |
+    | 1 | Short sound | 1 | 80ms |
+    | 2 | Medium sound | 2 | 160ms |
+    | 3 | Long sound | 3 | 240ms |
+    | 4 | Very long sound | 4 | 320ms |
+    
+    <Info>
+    Duration 0 allows emitting multiple tokens at the same timestamp, useful for compound words or fast speech.
+    </Info>
+  </Tab>
+  
+  <Tab title="Alignment Example">
+    Example decoding with durations:
+    
+    ```
+    Frame  Token     Duration  Start    End
+    0      "Hello"   2        0.00s    0.16s
+    2      " world"  1        0.16s    0.24s
+    3      "."       0        0.24s    0.24s
+    3      (blank)   1        -        -
+    4      "How"     1        0.32s    0.40s
+    ```
+    
+    Note:
+    - "Hello" spans 2 frames (0-2)
+    - "." has duration 0 (emitted at frame 3 but doesn't advance)
+    - Blank token at frame 3 advances to frame 4 without emission
+  </Tab>
+  
+  <Tab title="Beam Search Impact">
+    Beam search can produce more accurate durations:
+    
+    ```python
+    # From parakeet.py:436-440
+    score = (
+        hypothesis.score +
+        token_logprobs[token] * (1 - config.decoding.duration_reward) +
+        duration_logprobs[decision] * (config.decoding.duration_reward)
+    )
+    ```
+    
+    The `duration_reward` parameter controls how much to trust duration predictions vs token predictions. Higher values (0.6-0.7) often improve timestamp accuracy.
+  </Tab>
+</Tabs>
+
+### RNNT Alignment
+
+RNNT assigns fixed duration of 1 frame to all tokens:
+
+```python
+# From parakeet.py:720-728
+hypothesis.append(
+    AlignedToken(
+        int(pred_token),
+        start=step * self.time_ratio,
+        duration=1 * self.time_ratio,  # Always 1 frame
+        confidence=confidence,
+        text=tokenizer.decode([pred_token], self.vocabulary),
+    )
+)
+```
+
+<Warning>
+RNNT timestamps are less accurate than TDT because:
+1. All tokens have the same duration regardless of actual length
+2. Multiple tokens can be emitted at the same frame (step doesn't advance)
+3. Alignment depends on when the model emits blank tokens
+</Warning>
+
+### CTC Alignment
+
+CTC infers token boundaries from frame-level predictions:
+
+```python
+# From parakeet.py:798-838 (simplified)
+predictions = argmax(logits, axis=1)  # Per-frame predictions
+
+hypothesis = []
+prev_token = -1
+token_boundaries = []
+
+for t, token_id in enumerate(predictions):
+    if token_id == blank:  # Skip blank frames
+        continue
+    if token_id == prev_token:  # Skip repetitions
+        continue
+    
+    # New token boundary detected
+    if prev_token != -1:
+        # Finalize previous token
+        start_frame = token_boundaries[-1][0]
+        end_frame = t
+        
+        hypothesis.append(AlignedToken(
+            prev_token,
+            start=start_frame * time_ratio,
+            duration=(end_frame - start_frame) * time_ratio,
+            confidence=avg_confidence_over_frames,
+            text=decode([prev_token])
+        ))
+    
+    token_boundaries.append((t, None))
+    prev_token = token_id
+```
+
+<Tabs>
+  <Tab title="CTC Decoding Rules">
+    CTC collapses repetitions to find token boundaries:
+    
+    ```
+    Frame:  0    1    2    3    4    5    6    7
+    Pred:   H    H    _    e    l    l    _    o
+    
+    After collapsing:
+    - "H" at frame 0 (duration: 2 frames, 0-2)
+    - "e" at frame 3 (duration: 1 frame, 3-4)
+    - "l" at frame 4 (duration: 2 frames, 4-6)
+    - "o" at frame 7 (duration: 1+ frames, 7-end)
+    ```
+    
+    Token boundaries are detected when:
+    1. Token ID changes from previous frame
+    2. Current token is not blank
+  </Tab>
+  
+  <Tab title="Confidence Averaging">
+    CTC computes confidence by averaging over all frames in the token:
+    
+    ```python
+    # From parakeet.py:816-828
+    token_start_frame = token_boundaries[-1][0]
+    token_end_frame = t
+    token_probs = probs[token_start_frame:token_end_frame]
+    
+    # Average entropy across frames
+    entropies = -mx.sum(token_probs * mx.log(token_probs + 1e-10), axis=-1)
+    avg_entropy = mx.mean(entropies)
+    max_entropy = mx.log(mx.array(vocab_size, dtype=token_probs.dtype))
+    confidence = float(1.0 - (avg_entropy / max_entropy))
+    ```
+    
+    This provides a more robust confidence estimate than single-frame predictions.
+  </Tab>
+  
+  <Tab title="Limitations">
+    CTC alignment has several limitations:
+    
+    - **Variable duration artifacts**: Short tokens in fast speech may be under-represented
+    - **Boundary smearing**: Transitions between tokens may be detected late
+    - **No explicit duration**: Cannot distinguish intended vs accidental repetitions
+    - **Blank sensitivity**: Heavy blank predictions can create artificial gaps
+    
+    Despite these issues, CTC timestamps are often sufficient for subtitle generation and basic alignment.
+  </Tab>
+</Tabs>
+
+## Sentence Segmentation
+
+Tokens are grouped into sentences using configurable rules:
+
+### SentenceConfig
+
+```python
+# From alignment.py:51-55
+@dataclass
+class SentenceConfig:
+    max_words: int | None = None        # Split after N words
+    silence_gap: float | None = None    # Split after N seconds of silence
+    max_duration: float | None = None   # Split after N seconds total
+```
+
+<Tabs>
+  <Tab title="Parameters">
+    <ParamField path="max_words" type="int | None" default="None">
+      Maximum number of words per sentence. A "word" is detected by checking for space in token text.
+      
+      ```python
+      # From alignment.py:79-86
+      is_word_limit = (
+          (config.max_words is not None)
+          and (idx != len(tokens) - 1)
+          and (
+              len([x for x in current_tokens if " " in x.text])
+              + (1 if " " in tokens[idx + 1].text else 0)
+              > config.max_words
+          )
+      )
+      ```
+      
+      <Note>Set `max_words=30` for subtitle-style segmentation</Note>
+    </ParamField>
+    
+    <ParamField path="silence_gap" type="float | None" default="None">
+      Split sentences if silence between tokens exceeds this duration (in seconds).
+      
+      ```python
+      # From alignment.py:88-92
+      is_long_silence = (
+          (config.silence_gap is not None)
+          and (idx != len(tokens) - 1)
+          and (tokens[idx + 1].start - token.end >= config.silence_gap)
+      )
+      ```
+      
+      Useful for detecting natural pauses in speech.
+    </ParamField>
+    
+    <ParamField path="max_duration" type="float | None" default="None">
+      Split sentences after this many seconds of audio (regardless of content).
+      
+      ```python
+      # From alignment.py:93-95
+      is_over_duration = (
+          (config.max_duration is not None) and
+          (token.end - current_tokens[0].start >= config.max_duration)
+      )
+      ```
+      
+      Prevents excessively long sentence segments.
+    </ParamField>
+  </Tab>
+  
+  <Tab title="Punctuation Detection">
+    Sentences are automatically split on sentence-ending punctuation:
+    
+    ```python
+    # From alignment.py:67-78
+    is_punctuation = (
+        "!" in token.text
+        or "?" in token.text
+        or "。" in token.text  # Chinese/Japanese period
+        or "？" in token.text  # Chinese/Japanese question mark
+        or "！" in token.text  # Chinese/Japanese exclamation
+        or (
+            "." in token.text
+            and (idx == len(tokens) - 1 or " " in tokens[idx + 1].text)
+        )
+    )
+    ```
+    
+    Period (`.`) is only treated as sentence-ending if:
+    - It's the last token, OR
+    - The next token starts with a space (avoiding "Mr. Smith")
+  </Tab>
+  
+  <Tab title="Segmentation Algorithm">
+    ```python
+    # From alignment.py:58-109 (simplified)
+    def tokens_to_sentences(
+        tokens: list[AlignedToken],
+        config: SentenceConfig
+    ) -> list[AlignedSentence]:
+        sentences = []
+        current_tokens = []
+        
+        for idx, token in enumerate(tokens):
+            current_tokens.append(token)
+            
+            # Check split conditions
+            should_split = (
+                is_punctuation or
+                is_word_limit or
+                is_long_silence or
+                is_over_duration
+            )
+            
+            if should_split:
+                sentence_text = "".join(t.text for t in current_tokens)
+                sentence = AlignedSentence(
+                    text=sentence_text,
+                    tokens=current_tokens
+                )
+                sentences.append(sentence)
+                current_tokens = []
+        
+        # Handle remaining tokens
+        if current_tokens:
+            sentence = AlignedSentence(
+                text="".join(t.text for t in current_tokens),
+                tokens=current_tokens
+            )
+            sentences.append(sentence)
+        
+        return sentences
+    ```
+  </Tab>
+</Tabs>
+
+### Example Usage
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Default: split only on punctuation
+result = model.transcribe("audio.wav")
+
+# Split on punctuation OR every 30 words
+result = model.transcribe(
+    "audio.wav",
+    decoding_config=DecodingConfig(
+        sentence=SentenceConfig(max_words=30)
+    )
+)
+
+# Split on punctuation OR 2+ seconds of silence
+result = model.transcribe(
+    "audio.wav",
+    decoding_config=DecodingConfig(
+        sentence=SentenceConfig(silence_gap=2.0)
+    )
+)
+
+# Multiple conditions (split on any)
+result = model.transcribe(
+    "audio.wav",
+    decoding_config=DecodingConfig(
+        sentence=SentenceConfig(
+            max_words=30,
+            silence_gap=2.0,
+            max_duration=10.0
+        )
+    )
+)
+```
+
+## Chunk Merging
+
+When transcribing long audio with chunking, overlapping regions are merged intelligently:
+
+### Merge Strategies
+
+<Tabs>
+  <Tab title="Longest Contiguous">
+    Primary merge strategy that finds the longest contiguous matching subsequence:
+    
+    ```python
+    # From alignment.py:116-194
+    def merge_longest_contiguous(
+        a: list[AlignedToken],
+        b: list[AlignedToken],
+        overlap_duration: float
+    ):
+        # 1. Extract overlapping regions
+        overlap_a = [token for token in a if token.end > b_start - overlap_duration]
+        overlap_b = [token for token in b if token.start < a_end + overlap_duration]
+        
+        # 2. Find longest contiguous match
+        best_contiguous = []
+        for i in range(len(overlap_a)):
+            for j in range(len(overlap_b)):
+                if overlap_a[i].id == overlap_b[j].id and \
+                   abs(overlap_a[i].start - overlap_b[j].start) < overlap_duration / 2:
+                    # Extend match as far as possible
+                    current = []
+                    k, l = i, j
+                    while k < len(overlap_a) and l < len(overlap_b) and \
+                          overlap_a[k].id == overlap_b[l].id:
+                        current.append((k, l))
+                        k += 1
+                        l += 1
+                    
+                    if len(current) > len(best_contiguous):
+                        best_contiguous = current
+        
+        # 3. Merge using contiguous sequence as anchor
+        # Keep prefix from a, matched region, suffix from b
+        result = a[:match_start] + matched_tokens + b[match_end:]
+        return result
+    ```
+    
+    <Info>
+    Requires at least 50% of overlap tokens to match. Falls back to LCS if threshold not met.
+    </Info>
+  </Tab>
+  
+  <Tab title="Longest Common Subsequence">
+    Fallback strategy using dynamic programming:
+    
+    ```python
+    # From alignment.py:197-287
+    def merge_longest_common_subsequence(
+        a: list[AlignedToken],
+        b: list[AlignedToken],
+        overlap_duration: float
+    ):
+        # 1. Extract overlapping regions
+        overlap_a = [...]
+        overlap_b = [...]
+        
+        # 2. Dynamic programming for LCS
+        dp = [[0 for _ in range(len(overlap_b) + 1)]
+              for _ in range(len(overlap_a) + 1)]
+        
+        for i in range(1, len(overlap_a) + 1):
+            for j in range(1, len(overlap_b) + 1):
+                if overlap_a[i-1].id == overlap_b[j-1].id and \
+                   abs(overlap_a[i-1].start - overlap_b[j-1].start) < overlap_duration / 2:
+                    dp[i][j] = dp[i-1][j-1] + 1
+                else:
+                    dp[i][j] = max(dp[i-1][j], dp[i][j-1])
+        
+        # 3. Backtrack to find LCS
+        lcs_pairs = []
+        i, j = len(overlap_a), len(overlap_b)
+        while i > 0 and j > 0:
+            if overlap_a[i-1].id == overlap_b[j-1].id:
+                lcs_pairs.append((i-1, j-1))
+                i -= 1
+                j -= 1
+            elif dp[i-1][j] > dp[i][j-1]:
+                i -= 1
+            else:
+                j -= 1
+        
+        # 4. Merge using LCS as anchor
+        return merged_tokens
+    ```
+    
+    LCS is more flexible but slower than contiguous matching.
+  </Tab>
+  
+  <Tab title="Chunk Processing">
+    ```python
+    # From parakeet.py:180-220 (simplified)
+    all_tokens = []
+    
+    for start in range(0, len(audio), chunk_samples - overlap_samples):
+        # Transcribe chunk
+        chunk_audio = audio[start:end]
+        chunk_result = model.generate(chunk_mel)
+        
+        # Adjust timestamps relative to full audio
+        chunk_offset = start / sample_rate
+        for sentence in chunk_result.sentences:
+            for token in sentence.tokens:
+                token.start += chunk_offset
+                token.end = token.start + token.duration
+        
+        # Merge with previous chunks
+        if all_tokens:
+            try:
+                all_tokens = merge_longest_contiguous(
+                    all_tokens,
+                    chunk_result.tokens,
+                    overlap_duration=overlap_duration
+                )
+            except RuntimeError:  # Contiguous merge failed
+                all_tokens = merge_longest_common_subsequence(
+                    all_tokens,
+                    chunk_result.tokens,
+                    overlap_duration=overlap_duration
+                )
+        else:
+            all_tokens = chunk_result.tokens
+    ```
+  </Tab>
+</Tabs>
+
+### Overlap Duration
+
+```python
+result = model.transcribe(
+    "long_audio.wav",
+    chunk_duration=120.0,    # 2-minute chunks
+    overlap_duration=15.0    # 15-second overlap
+)
+```
+
+<Info>
+**Overlap duration** controls the merging window:
+- Too small (&lt;5s): Risk of missing matches, poor merging
+- Good range (10-20s): Reliable merging for most speech
+- Too large (&gt;30s): Unnecessary computation, slower processing
+
+Default of 15 seconds works well for natural speech.
+</Info>
+
+## Streaming Alignment
+
+Streaming mode produces incremental results with draft and finalized tokens:
+
+```python
+with model.transcribe_stream(context_size=(256, 256)) as transcriber:
+    for chunk in audio_chunks:
+        transcriber.add_audio(chunk)
+        
+        # Finalized tokens won't change
+        finalized = transcriber.finalized_tokens
+        
+        # Draft tokens may change in next iteration
+        draft = transcriber.draft_tokens
+        
+        # Combined result
+        result = transcriber.result
+```
+
+<Tabs>
+  <Tab title="Token States">
+    ```python
+    # From parakeet.py:1056-1088
+    finalized_length = max(0, length - self.drop_size)
+    
+    # Phase 1: Finalized region (won't change)
+    finalized_tokens, finalized_state = self.model.decode(
+        features,
+        mx.array([finalized_length]),
+        [self.last_token],
+        [self.decoder_hidden]
+    )
+    self.finalized_tokens.extend(finalized_tokens[0])
+    
+    # Phase 2: Draft region (will be reprocessed)
+    draft_tokens, _ = self.model.decode(
+        features[:, finalized_length:],
+        mx.array([features.shape[1] - finalized_length]),
+        [self.last_token],
+        [self.decoder_hidden]
+    )
+    self.draft_tokens = draft_tokens[0]  # Replace, don't extend
+    ```
+    
+    **Finalized tokens**: Processed with enough context, won't change
+    
+    **Draft tokens**: At the end, may change as more audio arrives
+  </Tab>
+  
+  <Tab title="Context Regions">
+    ```
+    Audio timeline:
+    |-------- Finalized --------|----- Draft -----|
+    |<------ keep_size --------->|<-- drop_size -->|
+    
+    keep_size = context_size[0]  (left context)
+    drop_size = context_size[1] * depth  (right context × layers)
+    ```
+    
+    - **Keep size**: How many frames to retain in cache (left context)
+    - **Drop size**: How many frames remain draft (right context buffer)
+    - **Depth**: Number of encoder layers with exact cache (1-N)
+  </Tab>
+  
+  <Tab title="Timestamp Continuity">
+    Timestamps in streaming mode are relative to the start of audio:
+    
+    ```python
+    # From parakeet.py:921-998
+    class StreamingParakeet:
+        finalized_tokens: list[AlignedToken]  # Cumulative
+        draft_tokens: list[AlignedToken]      # Reset each iteration
+        
+        @property
+        def result(self) -> AlignedResult:
+            return sentences_to_result(
+                tokens_to_sentences(
+                    self.finalized_tokens + self.draft_tokens,
+                    self.decoding_config.sentence
+                )
+            )
+    ```
+    
+    All timestamps are absolute from the beginning of the stream.
+  </Tab>
+</Tabs>
+
+## Accessing Timestamps
+
+### Token Level
+
+```python
+result = model.transcribe("audio.wav")
+
+for token in result.tokens:
+    print(f"{token.text:15s} [{token.start:6.2f}s - {token.end:6.2f}s] "
+          f"confidence: {token.confidence:.3f}")
+
+# Output:
+# Hello          [ 0.00s -  0.16s] confidence: 0.987
+#  world         [ 0.16s -  0.24s] confidence: 0.954
+# .              [ 0.24s -  0.24s] confidence: 0.892
+```
+
+### Sentence Level
+
+```python
+for idx, sentence in enumerate(result.sentences):
+    print(f"[{idx}] {sentence.text}")
+    print(f"    Time: {sentence.start:.2f}s - {sentence.end:.2f}s "
+          f"(duration: {sentence.duration:.2f}s)")
+    print(f"    Confidence: {sentence.confidence:.3f}")
+    print(f"    Tokens: {len(sentence.tokens)}")
+
+# Output:
+# [0] Hello world.
+#     Time: 0.00s - 0.24s (duration: 0.24s)
+#     Confidence: 0.945
+#     Tokens: 3
+```
+
+### Export Formats
+
+Timestamps can be exported to various subtitle formats:
+
+```bash
+# SRT format
+parakeet-mlx audio.mp3 --output-format srt
+
+# VTT format with word-level highlights
+parakeet-mlx audio.mp3 --output-format vtt --highlight-words
+
+# JSON with full timestamp data
+parakeet-mlx audio.mp3 --output-format json
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Choosing a model for timestamps">
+    **Best timestamp accuracy**: TDT models with beam search
+    ```python
+    model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+    result = model.transcribe(
+        "audio.wav",
+        decoding_config=DecodingConfig(
+            decoding=Beam(beam_size=5, duration_reward=0.7)
+        )
+    )
+    ```
+    
+    **Fast approximate timestamps**: CTC models
+    ```python
+    model = from_pretrained("mlx-community/parakeet-ctc-1.1b")
+    result = model.transcribe("audio.wav")  # Greedy only
+    ```
+    
+    **Balanced**: RNNT models
+  </Accordion>
+  
+  <Accordion title="Sentence segmentation for subtitles">
+    For subtitle generation, use `max_words` and `max_duration`:
+    
+    ```python
+    result = model.transcribe(
+        "video.mp4",
+        decoding_config=DecodingConfig(
+            sentence=SentenceConfig(
+                max_words=10,       # Max 10 words per subtitle
+                max_duration=5.0,   # Max 5 seconds per subtitle
+                silence_gap=1.0     # Split on 1+ second pauses
+            )
+        )
+    )
+    ```
+    
+    This creates comfortable reading segments for viewers.
+  </Accordion>
+  
+  <Accordion title="Handling long audio">
+    For audio longer than 2 minutes, use chunking:
+    
+    ```python
+    result = model.transcribe(
+        "podcast.mp3",
+        chunk_duration=120.0,   # 2-minute chunks
+        overlap_duration=15.0,  # 15-second overlap for merging
+        chunk_callback=lambda pos, total: print(f"{pos}/{total} samples")
+    )
+    ```
+    
+    Chunking:
+    - ✅ Prevents memory issues
+    - ✅ Enables progress tracking
+    - ✅ Maintains timestamp accuracy (with proper overlap)
+    - ⚠️ Slightly slower due to overlap processing
+  </Accordion>
+  
+  <Accordion title="Filtering by confidence">
+    Use confidence scores to identify uncertain regions:
+    
+    ```python
+    # Find low-confidence sentences
+    uncertain = [s for s in result.sentences if s.confidence < 0.7]
+    
+    # Find low-confidence tokens
+    uncertain_tokens = [t for t in result.tokens if t.confidence < 0.5]
+    
+    # Compute average confidence
+    avg_confidence = sum(s.confidence for s in result.sentences) / len(result.sentences)
+    
+    print(f"Average confidence: {avg_confidence:.3f}")
+    print(f"Uncertain regions: {len(uncertain)} / {len(result.sentences)}")
+    ```
+    
+    Low confidence may indicate:
+    - Background noise or poor audio quality
+    - Accents or unusual pronunciation
+    - Technical jargon or rare words
+    - Overlapping speech
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Model Architectures" icon="microchip" href="/concepts/models">
+    Learn how different models compute timestamps
+  </Card>
+  <Card title="Decoding Strategies" icon="route" href="/concepts/decoding">
+    Understand greedy vs beam search impact
+  </Card>
+</CardGroup>

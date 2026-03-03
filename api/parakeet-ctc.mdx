@@ -1,0 +1,318 @@
+---
+title: 'ParakeetCTC'
+description: 'Connectionist Temporal Classification model implementation'
+---
+
+## Overview
+
+`ParakeetCTC` implements the CTC (Connectionist Temporal Classification) architecture, a simpler and faster alternative to transducer-based models.
+
+**Key features:**
+- Fastest inference among all Parakeet variants
+- Simpler architecture (encoder + linear decoder)
+- Frame-independent predictions
+- Only supports greedy decoding
+- No decoder hidden state required
+- Good for batch processing of clear audio
+
+## Class Definition
+
+```python
+class ParakeetCTC(BaseParakeet):
+    def __init__(self, args: ParakeetCTCArgs):
+        ...
+```
+
+## Inherited Methods
+
+ParakeetCTC inherits all methods from [BaseParakeet](/api/base-parakeet):
+
+- `transcribe()` - Transcribe audio files
+- `transcribe_stream()` - Real-time streaming transcription
+- `generate()` - Low-level mel-spectrogram to text
+
+See [BaseParakeet documentation](/api/base-parakeet) for details.
+
+## CTC-Specific Methods
+
+### decode()
+
+Low-level decoding method that converts encoder features to aligned tokens using CTC greedy decoding.
+
+```python
+def decode(
+    self,
+    features: mx.array,
+    lengths: mx.array,
+    *,
+    config: DecodingConfig = DecodingConfig(),
+) -> list[list[AlignedToken]]
+```
+
+<Note>
+  CTC decode() has a simpler signature than TDT/RNNT - no `last_token` or `hidden_state` parameters are needed.
+</Note>
+
+#### Parameters
+
+<ParamField path="features" type="mx.array" required>
+  Encoder output features with shape `[batch, sequence, feature_dim]`.
+  
+  Typically obtained from:
+  ```python
+  features, lengths = model.encoder(mel)
+  ```
+</ParamField>
+
+<ParamField path="lengths" type="mx.array" required>
+  Valid length of each sequence in the batch. Shape: `[batch]`.
+  
+  Unlike TDT/RNNT, this parameter is required for CTC decoding.
+</ParamField>
+
+<ParamField path="config" type="DecodingConfig" default="DecodingConfig()">
+  Decoding configuration. Only greedy decoding is supported (config.decoding is not used for CTC).
+</ParamField>
+
+#### Returns
+
+<ResponseField name="tokens" type="list[list[AlignedToken]]">
+  List of token sequences, one per batch item. Each token includes:
+  - `id` - Token ID in vocabulary
+  - `text` - Decoded text
+  - `start` - Start time in seconds
+  - `duration` - Duration in seconds (span between token boundaries)
+  - `confidence` - Confidence score (0.0 to 1.0)
+  
+  Note: CTC returns only tokens, not hidden states (since there is no decoder RNN).
+</ResponseField>
+
+#### Examples
+
+**Basic CTC decoding:**
+```python
+import mlx.core as mx
+from parakeet_mlx import from_pretrained, DecodingConfig
+from parakeet_mlx.audio import get_logmel, load_audio
+from typing import cast
+
+model = from_pretrained("mlx-community/parakeet-ctc-0.6b")
+model_ctc = cast(ParakeetCTC, model)
+
+# Prepare input
+audio = load_audio("audio.wav", model.preprocessor_config.sample_rate)
+mel = get_logmel(audio, model.preprocessor_config)
+
+# Encode
+features, lengths = model.encoder(mel)
+
+# Decode - note: lengths is required
+tokens = model_ctc.decode(features, lengths)
+
+# Print tokens
+for token in tokens[0]:
+    print(f"[{token.start:.2f}s - {token.end:.2f}s] {token.text} (conf: {token.confidence:.2f})")
+```
+
+**Batch decoding:**
+```python
+# Process multiple mel-spectrograms
+batch_mel = mx.stack([mel1, mel2, mel3])
+features, lengths = model.encoder(batch_mel)
+
+# Decode all at once
+tokens_batch = model_ctc.decode(features, lengths)
+
+for i, tokens in enumerate(tokens_batch):
+    text = "".join(t.text for t in tokens)
+    print(f"Input {i}: {text}")
+```
+
+**Using with generate() for convenience:**
+```python
+# generate() internally calls decode()
+results = model.generate(mel)
+
+for result in results:
+    print(result.text)
+    for sentence in result.sentences:
+        print(f"  [{sentence.start:.2f}s - {sentence.end:.2f}s] {sentence.text}")
+```
+
+**Accessing raw logits:**
+```python
+# Get encoder features
+features, lengths = model.encoder(mel)
+
+# Get CTC logits before decoding
+logits = model_ctc.decoder(features)  # Shape: [batch, sequence, vocab_size+1]
+mx.eval(logits)
+
+# Now decode
+tokens = model_ctc.decode(features, lengths)
+```
+
+## Decoding Algorithm
+
+### CTC Greedy Decoding
+
+CTC uses a frame-independent decoding strategy:
+
+**Process:**
+
+1. For each frame, select most likely token (argmax)
+2. Remove consecutive duplicates
+3. Remove blank tokens
+4. Merge adjacent identical tokens
+5. Compute token boundaries and confidence
+
+**Example:**
+```
+Frame predictions:  [BLANK, H, H, E, E, L, L, BLANK, L, O]
+After collapse:     [H, E, L, L, O]
+After blank remove: [H, E, L, L, O]
+```
+
+**Token timing:**
+- Token start: First frame where token appears
+- Token end: Last frame before next different token
+- Duration: Time span between start and end
+
+**Confidence scoring:**
+- Computed using entropy-based method across token frames
+- Lower entropy = higher confidence
+- Formula: `confidence = 1.0 - (avg_entropy / max_entropy)`
+
+## Model Properties
+
+```python
+model.vocabulary       # list[str] - Token vocabulary
+model.decoder          # ConvASRDecoder - Linear CTC decoder
+model.encoder          # Conformer - Encoder network
+```
+
+## Architecture Details
+
+**CTC pipeline:**
+
+1. **Encoder**: Converts mel-spectrogram to features
+   ```python
+   features, lengths = model.encoder(mel)  # Shape: [B, T, D]
+   ```
+
+2. **Decoder**: Linear projection to vocabulary
+   ```python
+   logits = model.decoder(features)  # Shape: [B, T, vocab_size+1]
+   ```
+   
+   The decoder is just:
+   - Optional convolutional layers
+   - Linear layer: `features → vocab_size + 1` (including blank)
+   - Log-softmax for probabilities
+
+3. **Decoding**: Collapse and remove blanks
+   ```python
+   predictions = mx.argmax(logits, axis=-1)  # [B, T]
+   # Collapse consecutive duplicates, remove blanks
+   tokens = collapse_and_deblanks(predictions)
+   ```
+
+**Comparison with Transducers:**
+
+| Feature | CTC | TDT/RNNT |
+|---------|-----|----------|
+| Architecture | Encoder + Linear | Encoder + Decoder RNN + Joint |
+| Hidden state | None | LSTM (h, c) |
+| Frame dependency | Independent | Dependent on history |
+| Decoding speed | Fastest | Moderate |
+| Accuracy | Good | Better |
+| Streaming | Supported | Supported |
+| Beam search | Not implemented | TDT only |
+
+**Why CTC is faster:**
+- No decoder RNN forward pass per frame
+- No joint network computation
+- Simple argmax + collapse operation
+- Can be fully parallelized
+
+## Token Boundaries
+
+CTC determines token boundaries by tracking when tokens change:
+
+```python
+# Frame predictions
+frames: [BLANK, H, H, H, E, E, L, L, L, BLANK, L, L, O]
+         0     1  2  3  4  5  6  7  8   9    10 11 12
+
+# Token boundaries
+H: frames 1-3   → start=1*time_ratio, end=4*time_ratio
+E: frames 4-5   → start=4*time_ratio, end=6*time_ratio  
+L: frames 6-8   → start=6*time_ratio, end=9*time_ratio
+L: frames 10-11 → start=10*time_ratio, end=12*time_ratio
+O: frames 12    → start=12*time_ratio, end=13*time_ratio
+```
+
+Note: Blank frames don't produce tokens but separate repeated characters.
+
+## Performance Tips
+
+1. **Use for batch processing**: CTC excels at processing many files at once
+2. **Best for clear audio**: CTC works well when audio quality is good
+3. **Fastest option**: Choose CTC when speed is critical
+4. **No state management**: Simpler to use than TDT/RNNT (no hidden states)
+5. **Memory efficient**: No decoder RNN means less memory usage
+
+## Streaming with CTC
+
+While CTC supports streaming, it's simpler than transducers:
+
+```python
+with model.transcribe_stream() as stream:
+    for audio_chunk in audio_chunks:
+        stream.add_audio(audio_chunk)
+        result = stream.result
+        print(result.text)
+```
+
+**Key difference from TDT/RNNT:**
+- No decoder state to track
+- Each frame is predicted independently
+- Simpler state management in streaming implementation
+
+## When to Use CTC
+
+**Choose CTC when:**
+- Speed is the top priority
+- Audio quality is good
+- You're doing batch processing
+- You don't need maximum accuracy
+- Simpler architecture is preferred
+- Memory is very constrained
+
+**Choose TDT/RNNT when:**
+- Accuracy is more important than speed
+- Audio quality varies
+- You need beam search (TDT)
+- You need duration predictions (TDT)
+- You want better handling of challenging audio
+
+**Performance comparison (approximate):**
+- CTC: ~2x faster than TDT greedy, ~10x faster than TDT beam
+- CTC: 90-95% of TDT accuracy on clear audio
+- CTC: Lower relative accuracy on noisy/accented audio
+
+## Limitations
+
+1. **No beam search**: Only greedy decoding is available
+2. **Independence assumption**: Each frame is predicted independently, missing some context
+3. **Alignment quality**: Can produce less precise alignments than transducers
+4. **Challenging audio**: Performance degrades more on noisy/accented audio compared to TDT
+
+## Related
+
+- [BaseParakeet](/api/base-parakeet) - Common interface and methods
+- [ParakeetTDT](/api/parakeet-tdt) - TDT variant (higher accuracy, beam search)
+- [ParakeetRNNT](/api/parakeet-rnnt) - RNNT variant (balance of speed and accuracy)
+- [DecodingConfig](/api/decoding-config) - Decoding configuration
+- [AlignedToken](/api/aligned-token) - Token structure
+- [Performance comparison](/concepts/models) - Choosing the right model

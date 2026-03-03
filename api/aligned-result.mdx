@@ -1,0 +1,220 @@
+---
+title: 'AlignedResult'
+description: 'Top-level transcription result with sentences and tokens'
+icon: 'file-lines'
+---
+
+`AlignedResult` is a dataclass that represents the complete transcription result, containing the full text and a list of aligned sentences with timestamps.
+
+## Class Definition
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# result is an AlignedResult object
+print(type(result))  # <class 'parakeet_mlx.alignment.AlignedResult'>
+```
+
+## Fields
+
+<ResponseField name="text" type="str">
+  The complete transcribed text. This is the concatenation of all sentence texts, automatically trimmed of leading/trailing whitespace.
+  
+  **Example:** `"Hello, how are you? I'm doing great."`
+</ResponseField>
+
+<ResponseField name="sentences" type="list[AlignedSentence]">
+  List of [AlignedSentence](/api/aligned-sentence) objects, each containing text, timing information, and constituent tokens.
+  
+  Each sentence includes:
+  - `text`: Sentence text
+  - `start`: Start time in seconds
+  - `end`: End time in seconds
+  - `duration`: Duration in seconds
+  - `tokens`: List of [AlignedToken](/api/aligned-token) objects
+  - `confidence`: Aggregate confidence score (0.0 to 1.0)
+</ResponseField>
+
+---
+
+## Properties
+
+<ResponseField name="tokens" type="list[AlignedToken]" property>
+  **Read-only property** that returns all tokens from all sentences in a flat list.
+  
+  This is a convenience method that flattens `[token for sentence in sentences for token in sentence.tokens]`.
+  
+  **Example:**
+  ```python
+  result = model.transcribe("audio.wav")
+  
+  # Access all tokens at once
+  all_tokens = result.tokens
+  
+  print(f"Total tokens: {len(all_tokens)}")
+  for token in all_tokens:
+      print(f"{token.start:.2f}s: {token.text}")
+  ```
+</ResponseField>
+
+---
+
+## Examples
+
+### Basic Transcription
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Access the full text
+print(result.text)
+# Output: "Hello, how are you? I'm doing great."
+
+# Access sentences
+print(f"Number of sentences: {len(result.sentences)}")
+for sentence in result.sentences:
+    print(f"[{sentence.start:.2f}s - {sentence.end:.2f}s] {sentence.text}")
+```
+
+### Accessing Tokens
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Get all tokens from the property
+all_tokens = result.tokens
+
+print(f"Total tokens: {len(all_tokens)}")
+for token in all_tokens:
+    print(f"{token.start:.2f}s - {token.end:.2f}s: '{token.text}' (confidence: {token.confidence:.2f})")
+```
+
+### Working with Sentences
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Configure sentence splitting
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_words=30,
+        silence_gap=5.0
+    )
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+
+# Iterate through sentences
+for i, sentence in enumerate(result.sentences, 1):
+    print(f"\nSentence {i}:")
+    print(f"  Time: {sentence.start:.2f}s - {sentence.end:.2f}s ({sentence.duration:.2f}s)")
+    print(f"  Confidence: {sentence.confidence:.2%}")
+    print(f"  Text: {sentence.text}")
+    print(f"  Tokens: {len(sentence.tokens)}")
+```
+
+### Generating Subtitles
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(max_words=15, max_duration=5.0)
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+
+# Generate SRT-style output
+for i, sentence in enumerate(result.sentences, 1):
+    start_time = format_timestamp(sentence.start)
+    end_time = format_timestamp(sentence.end)
+    
+    print(f"{i}")
+    print(f"{start_time} --> {end_time}")
+    print(f"{sentence.text}")
+    print()
+
+def format_timestamp(seconds):
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+```
+
+### Batch Processing
+
+```python
+from parakeet_mlx import from_pretrained
+from parakeet_mlx.audio import load_audio, get_logmel
+import mlx.core as mx
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Process multiple audio files
+audio_files = ["audio1.wav", "audio2.wav", "audio3.wav"]
+
+# Load and preprocess
+audio_data = [
+    load_audio(f, model.preprocessor_config.sample_rate)
+    for f in audio_files
+]
+mels = [get_logmel(audio, model.preprocessor_config) for audio in audio_data]
+
+# Batch process
+mel_batch = mx.concatenate(mels, axis=0)
+results = model.generate(mel_batch)  # Returns list[AlignedResult]
+
+# Process each result
+for filename, result in zip(audio_files, results):
+    print(f"\n{filename}:")
+    print(f"  {result.text}")
+    print(f"  Sentences: {len(result.sentences)}")
+    print(f"  Tokens: {len(result.tokens)}")
+```
+
+---
+
+## JSON Export
+
+Export transcription results to JSON:
+
+```python
+import json
+from dataclasses import asdict
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Convert to dictionary
+result_dict = asdict(result)
+
+# Save to JSON
+with open("transcription.json", "w") as f:
+    json.dump(result_dict, f, indent=2)
+
+print(json.dumps(result_dict, indent=2))
+```
+
+---
+
+## Related
+
+- [AlignedSentence](/api/aligned-sentence) - Sentence-level results
+- [AlignedToken](/api/aligned-token) - Token-level results
+- [BaseParakeet.transcribe()](/api/base-parakeet#transcribe) - Method that returns AlignedResult
+- [BaseParakeet.generate()](/api/base-parakeet#generate) - Low-level method returning list[AlignedResult]

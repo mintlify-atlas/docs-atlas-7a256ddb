@@ -1,0 +1,406 @@
+---
+title: CLI Usage
+description: Complete guide to using the Parakeet MLX command-line interface
+icon: terminal
+---
+
+The Parakeet MLX CLI provides a powerful command-line interface for transcribing audio files using Nvidia's Parakeet ASR models on Apple Silicon.
+
+## Installation
+
+<Note>
+  Make sure you have `ffmpeg` installed on your system first, otherwise the CLI won't work properly.
+</Note>
+
+<CodeGroup>
+
+```bash Using uv (recommended)
+uv tool install parakeet-mlx -U
+```
+
+```bash Using pip
+pip install parakeet-mlx -U
+```
+
+</CodeGroup>
+
+## Basic Usage
+
+The basic syntax for the CLI is:
+
+```bash
+parakeet-mlx <audio_files> [OPTIONS]
+```
+
+### Quick Examples
+
+<CodeGroup>
+
+```bash Single file
+parakeet-mlx audio.mp3
+```
+
+```bash Multiple files
+parakeet-mlx audio1.mp3 audio2.wav audio3.mp4
+```
+
+```bash Using wildcards
+parakeet-mlx *.mp3
+```
+
+</CodeGroup>
+
+## Core Options
+
+### Model Selection
+
+<ParamField path="--model" type="string" default="mlx-community/parakeet-tdt-0.6b-v3">
+  Hugging Face repository of the model to use. Available models can be found in the [mlx-community/parakeet collection](https://huggingface.co/collections/mlx-community/parakeet).
+</ParamField>
+
+```bash
+parakeet-mlx audio.mp3 --model mlx-community/parakeet-tdt-1.1b
+```
+
+<Tip>
+  Set the `PARAKEET_MODEL` environment variable to avoid specifying the model every time:
+  ```bash
+  export PARAKEET_MODEL=mlx-community/parakeet-tdt-1.1b
+  ```
+</Tip>
+
+### Output Configuration
+
+<ParamField path="--output-dir" type="path" default=".">
+  Directory to save transcription outputs.
+</ParamField>
+
+<ParamField path="--output-format" type="string" default="srt">
+  Format for output files. Options: `txt`, `srt`, `vtt`, `json`, `all`
+</ParamField>
+
+<ParamField path="--output-template" type="string" default="{filename}">
+  Template for output filenames. Available variables:
+  - `{filename}` - Original filename without extension
+  - `{parent}` - Parent directory path
+  - `{date}` - Current date in YYYYMMDD format
+  - `{index}` - File index (1-based)
+</ParamField>
+
+<CodeGroup>
+
+```bash Save to specific directory
+parakeet-mlx audio.mp3 --output-dir ./transcriptions
+```
+
+```bash Custom filename template
+parakeet-mlx *.mp3 --output-template "{date}_{filename}_transcript"
+# Output: 20260303_audio_transcript.srt
+```
+
+```bash Generate all formats
+parakeet-mlx audio.mp3 --output-format all
+# Generates: audio.txt, audio.srt, audio.vtt, audio.json
+```
+
+</CodeGroup>
+
+## Decoding Options
+
+### Decoding Method
+
+<ParamField path="--decoding" type="string" default="greedy">
+  Decoding method to use: `greedy` or `beam`
+  
+  <Warning>
+    Beam decoding is only available for TDT models and is slower but potentially more accurate.
+  </Warning>
+</ParamField>
+
+```bash Greedy decoding (fast)
+parakeet-mlx audio.mp3 --decoding greedy
+```
+
+```bash Beam decoding (accurate)
+parakeet-mlx audio.mp3 --decoding beam --beam-size 5
+```
+
+### Beam Search Parameters
+
+These parameters only apply when using `--decoding beam`:
+
+<ParamField path="--beam-size" type="integer" default="5">
+  Number of beams to maintain during search. Higher values increase accuracy but reduce speed.
+</ParamField>
+
+<ParamField path="--length-penalty" type="float" default="0.013">
+  Length penalty for beam search. Set to 0.0 to disable. Higher values favor longer hypotheses.
+</ParamField>
+
+<ParamField path="--patience" type="float" default="3.5">
+  Patience multiplier for beam search. Set to 1.0 to disable. Higher values keep more candidates.
+</ParamField>
+
+<ParamField path="--duration-reward" type="float" default="0.67">
+  TDT-specific: Balance between token and duration logprobs (0.0-1.0).
+  - < 0.5: Favor token probabilities
+  - > 0.5: Favor duration probabilities
+</ParamField>
+
+```bash Fine-tuned beam search
+parakeet-mlx audio.mp3 \
+  --decoding beam \
+  --beam-size 10 \
+  --length-penalty 0.02 \
+  --patience 4.0 \
+  --duration-reward 0.7
+```
+
+## Sentence Splitting Options
+
+Control how the transcription is split into sentences:
+
+<ParamField path="--max-words" type="integer" default="None">
+  Maximum number of words per sentence.
+</ParamField>
+
+<ParamField path="--silence-gap" type="float" default="None">
+  Split sentences at silence gaps longer than this duration (in seconds).
+</ParamField>
+
+<ParamField path="--max-duration" type="float" default="None">
+  Maximum sentence duration in seconds.
+</ParamField>
+
+```bash Limit sentence length
+parakeet-mlx audio.mp3 --max-words 20 --max-duration 10.0
+```
+
+```bash Split on silence
+parakeet-mlx audio.mp3 --silence-gap 2.0
+```
+
+## Performance Options
+
+### Precision
+
+<ParamField path="--fp32 / --bf16" type="boolean" default="bf16">
+  Choose floating-point precision:
+  - `--bf16`: BFloat16 precision (default, faster, lower memory)
+  - `--fp32`: Float32 precision (slower, higher memory, potentially more accurate)
+</ParamField>
+
+```bash Use FP32 precision
+parakeet-mlx audio.mp3 --fp32
+```
+
+### Attention Mechanism
+
+<ParamField path="--local-attention / --full-attention" type="boolean" default="full-attention">
+  Attention mechanism to use:
+  - `--full-attention`: Standard full attention (default)
+  - `--local-attention`: Local attention (reduces memory for long audio)
+</ParamField>
+
+<ParamField path="--local-attention-context-size" type="integer" default="256">
+  Context window size for local attention (in frames).
+</ParamField>
+
+```bash Use local attention for long audio
+parakeet-mlx long_audio.mp3 \
+  --local-attention \
+  --local-attention-context-size 512 \
+  --chunk-duration 0
+```
+
+<Note>
+  Local attention is most useful when transcribing long audio files without chunking.
+</Note>
+
+### Cache Directory
+
+<ParamField path="--cache-dir" type="path" default="None">
+  Directory for HuggingFace model cache. Defaults to `~/.cache/huggingface` or the value of `HF_HOME`/`HF_HUB_CACHE`.
+</ParamField>
+
+```bash Custom cache location
+parakeet-mlx audio.mp3 --cache-dir /path/to/cache
+```
+
+## Subtitle Features
+
+### Word-Level Timestamps
+
+<ParamField path="--highlight-words" type="boolean" default="false">
+  Generate word-level timestamps in SRT/VTT outputs. Each word appears highlighted as it's spoken.
+</ParamField>
+
+<CodeGroup>
+
+```bash Sentence-level SRT (default)
+parakeet-mlx audio.mp3 --output-format srt
+```
+
+```bash Word-level SRT
+parakeet-mlx audio.mp3 --output-format srt --highlight-words
+```
+
+```bash Word-level VTT
+parakeet-mlx audio.mp3 --output-format vtt --highlight-words
+```
+
+</CodeGroup>
+
+## Verbose Mode
+
+<ParamField path="--verbose / -v" type="boolean" default="false">
+  Print detailed progress information including:
+  - Model loading status
+  - Output directory and format
+  - Per-file processing progress
+  - Sentence-level timestamps and confidence scores
+</ParamField>
+
+```bash Enable verbose output
+parakeet-mlx audio.mp3 -v
+```
+
+Example verbose output:
+```
+Loading model: mlx-community/parakeet-tdt-0.6b-v3...
+Model loaded successfully.
+Output directory: /current/directory
+Output format(s): srt
+Transcribing 1 file(s)...
+
+Processing file 1/1: audio.mp3
+[00:00:00,000 --> 00:00:02,340] (confidence: 95.32%) Hello world.
+[00:00:02,340 --> 00:00:05,120] (confidence: 93.18%) This is a test.
+
+Saved SRT: /current/directory/audio.srt
+
+parakeet-tdt-0.6b-v3 transcription complete. Outputs saved in '/current/directory'.
+```
+
+## Environment Variables
+
+All options can be set via environment variables:
+
+| Option | Environment Variable |
+|--------|---------------------|
+| `--model` | `PARAKEET_MODEL` |
+| `--output-format` | `PARAKEET_OUTPUT_FORMAT` |
+| `--output-template` | `PARAKEET_OUTPUT_TEMPLATE` |
+| `--decoding` | `PARAKEET_DECODING` |
+| `--chunk-duration` | `PARAKEET_CHUNK_DURATION` |
+| `--overlap-duration` | `PARAKEET_OVERLAP_DURATION` |
+| `--beam-size` | `PARAKEET_BEAM_SIZE` |
+| `--length-penalty` | `PARAKEET_LENGTH_PENALTY` |
+| `--patience` | `PARAKEET_PATIENCE` |
+| `--duration-reward` | `PARAKEET_DURATION_REWARD` |
+| `--max-words` | `PARAKEET_MAX_WORDS` |
+| `--silence-gap` | `PARAKEET_SILENCE_GAP` |
+| `--max-duration` | `PARAKEET_MAX_DURATION` |
+| `--fp32` | `PARAKEET_FP32` |
+| `--local-attention` | `PARAKEET_LOCAL_ATTENTION` |
+| `--local-attention-context-size` | `PARAKEET_LOCAL_ATTENTION_CTX` |
+| `--cache-dir` | `PARAKEET_CACHE_DIR` |
+
+```bash Example: Set default model
+export PARAKEET_MODEL=mlx-community/parakeet-tdt-1.1b
+export PARAKEET_OUTPUT_FORMAT=vtt
+export PARAKEET_DECODING=beam
+
+parakeet-mlx audio.mp3  # Uses environment defaults
+```
+
+## Common Workflows
+
+<Steps>
+
+<Step title="Basic Transcription">
+  ```bash
+  parakeet-mlx audio.mp3
+  ```
+  Generates `audio.srt` in the current directory.
+</Step>
+
+<Step title="Batch Processing">
+  ```bash
+  parakeet-mlx *.mp3 --output-dir ./transcripts --output-format all
+  ```
+  Transcribes all MP3 files and generates all output formats in the `transcripts` directory.
+</Step>
+
+<Step title="High-Quality Subtitles">
+  ```bash
+  parakeet-mlx video.mp4 \
+    --output-format vtt \
+    --highlight-words \
+    --decoding beam \
+    --beam-size 10 \
+    --max-duration 8.0
+  ```
+  Generates word-level VTT subtitles with beam search for maximum accuracy.
+</Step>
+
+<Step title="Long Audio Processing">
+  ```bash
+  parakeet-mlx podcast.mp3 \
+    --chunk-duration 120 \
+    --overlap-duration 15 \
+    --output-format json \
+    -v
+  ```
+  Process long audio with chunking and verbose output. See [Chunking Guide](/guides/chunking) for details.
+</Step>
+
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title="FFmpeg not found error">
+  Install FFmpeg:
+  ```bash
+  # macOS
+  brew install ffmpeg
+  
+  # Ubuntu/Debian
+  sudo apt install ffmpeg
+  ```
+</Accordion>
+
+<Accordion title="Out of memory errors">
+  Try these solutions:
+  1. Use BFloat16 precision (default): `--bf16`
+  2. Enable chunking: `--chunk-duration 60`
+  3. Use local attention: `--local-attention`
+  4. Reduce beam size: `--beam-size 3`
+</Accordion>
+
+<Accordion title="Model download issues">
+  Check your internet connection and HuggingFace access. You can also:
+  1. Pre-download the model using `huggingface-cli`
+  2. Set a custom cache directory: `--cache-dir /path/to/cache`
+</Accordion>
+
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Chunking Guide" icon="scissors" href="/guides/chunking">
+    Learn how to efficiently process long audio files
+  </Card>
+  <Card title="Output Formats" icon="file-lines" href="/guides/output-formats">
+    Understand the different output format options
+  </Card>
+  <Card title="Python API" icon="code" href="/guides/python-api">
+    Use Parakeet MLX programmatically in your code
+  </Card>
+  <Card title="Streaming" icon="tower-broadcast" href="/guides/streaming">
+    Real-time transcription with streaming inference
+  </Card>
+</CardGroup>

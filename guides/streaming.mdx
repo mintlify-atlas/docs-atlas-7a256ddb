@@ -1,0 +1,522 @@
+---
+title: Streaming Transcription
+description: Real-time audio transcription with streaming inference
+icon: tower-broadcast
+---
+
+Streaming transcription allows you to transcribe audio in real-time as it's being captured, perfect for live applications like voice assistants, live captioning, or real-time meeting transcription.
+
+## Overview
+
+Parakeet MLX provides streaming inference through the `transcribe_stream()` context manager, which processes audio chunks incrementally while maintaining context across chunks.
+
+### Key Features
+
+- **Real-time processing**: Process audio as it arrives
+- **Context preservation**: Maintains encoder state across chunks
+- **Draft tokens**: Preview transcription before finalization
+- **Memory efficient**: Uses rotating cache to limit memory usage
+- **Local attention**: Automatically switches to local attention for streaming
+
+## Basic Usage
+
+<Steps>
+
+<Step title="Load the model">
+  ```python
+  from parakeet_mlx import from_pretrained
+  
+  model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+  ```
+</Step>
+
+<Step title="Create streaming context">
+  ```python
+  with model.transcribe_stream(context_size=(256, 256)) as transcriber:
+      # Add audio chunks here
+      pass
+  ```
+</Step>
+
+<Step title="Add audio chunks">
+  ```python
+  with model.transcribe_stream(context_size=(256, 256)) as transcriber:
+      # Process audio chunks
+      transcriber.add_audio(audio_chunk)
+      
+      # Get current result
+      result = transcriber.result
+      print(result.text)
+  ```
+</Step>
+
+</Steps>
+
+## Complete Example
+
+Here's a complete example that simulates real-time streaming:
+
+```python
+import mlx.core as mx
+from parakeet_mlx import from_pretrained
+from parakeet_mlx.audio import load_audio
+
+# Load model
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Create streaming context
+with model.transcribe_stream(
+    context_size=(256, 256),  # (left_context, right_context) frames
+    depth=1,                   # Cache depth
+) as transcriber:
+    # Load audio (in practice, this would come from a microphone)
+    audio_data = load_audio(
+        "audio_file.wav",
+        model.preprocessor_config.sample_rate
+    )
+    
+    # Process in 1-second chunks
+    chunk_size = model.preprocessor_config.sample_rate  # 1 second
+    
+    for i in range(0, len(audio_data), chunk_size):
+        chunk = audio_data[i:i + chunk_size]
+        
+        # Add audio chunk
+        transcriber.add_audio(chunk)
+        
+        # Get current transcription
+        result = transcriber.result
+        
+        # Display update
+        print(f"\rCurrent: {result.text}", end="")
+    
+    # Final result
+    print(f"\n\nFinal: {result.text}")
+```
+
+## Parameters
+
+### context_size
+
+<ParamField path="context_size" type="tuple[int, int]" default="(256, 256)">
+  A tuple of `(left_context, right_context)` specifying the attention window size in encoder frames.
+  
+  - **left_context**: How many frames to look back
+  - **right_context**: How many frames to look ahead
+  
+  Larger values provide more context but increase memory usage.
+</ParamField>
+
+```python
+# Small context (lower latency, less accuracy)
+with model.transcribe_stream(context_size=(128, 128)) as transcriber:
+    pass
+
+# Large context (higher latency, more accuracy)
+with model.transcribe_stream(context_size=(512, 512)) as transcriber:
+    pass
+```
+
+### depth
+
+<ParamField path="depth" type="int" default="1">
+  Number of encoder layers that preserve exact computation across chunks.
+  
+  - `depth=1`: Only first encoder layer matches non-streaming computation exactly
+  - `depth=2`: First two layers match exactly
+  - `depth=N`: Full equivalence to non-streaming forward pass (where N is total layers)
+  
+  Higher depth improves consistency with non-streaming mode but uses more memory.
+</ParamField>
+
+```python
+# Minimal cache (lower memory)
+with model.transcribe_stream(depth=1) as transcriber:
+    pass
+
+# More consistent with non-streaming (higher memory)
+with model.transcribe_stream(depth=4) as transcriber:
+    pass
+```
+
+### keep_original_attention
+
+<ParamField path="keep_original_attention" type="bool" default="False">
+  Whether to preserve the original attention mechanism.
+  
+  - `False`: Switches to local attention (recommended for streaming)
+  - `True`: Keeps original attention (less suitable for streaming)
+</ParamField>
+
+```python
+# Use local attention (recommended)
+with model.transcribe_stream(keep_original_attention=False) as transcriber:
+    pass
+
+# Keep original attention
+with model.transcribe_stream(keep_original_attention=True) as transcriber:
+    pass
+```
+
+### decoding_config
+
+<ParamField path="decoding_config" type="DecodingConfig" default="DecodingConfig()">
+  Configuration for decoding and sentence splitting. See [Python API](/guides/python-api#decoding-configuration) for details.
+</ParamField>
+
+```python
+from parakeet_mlx import DecodingConfig, Greedy, SentenceConfig
+
+config = DecodingConfig(
+    decoding=Greedy(),
+    sentence=SentenceConfig(max_words=20)
+)
+
+with model.transcribe_stream(
+    context_size=(256, 256),
+    decoding_config=config
+) as transcriber:
+    pass
+```
+
+## StreamingParakeet Methods
+
+### add_audio()
+
+Add an audio chunk to the transcriber:
+
+```python
+with model.transcribe_stream() as transcriber:
+    # audio_chunk must be a 1D MLX array
+    transcriber.add_audio(audio_chunk)
+```
+
+<Warning>
+  The audio chunk must be a 1D `mx.array` with the correct sample rate (usually 16kHz).
+</Warning>
+
+### result Property
+
+Get the current transcription result:
+
+```python
+with model.transcribe_stream() as transcriber:
+    transcriber.add_audio(audio_chunk)
+    
+    # Get current result (AlignedResult)
+    result = transcriber.result
+    print(result.text)
+    print(result.sentences)
+```
+
+### finalized_tokens Property
+
+Access finalized tokens (won't change anymore):
+
+```python
+with model.transcribe_stream() as transcriber:
+    transcriber.add_audio(audio_chunk)
+    
+    # Get finalized tokens (list[AlignedToken])
+    finalized = transcriber.finalized_tokens
+    for token in finalized:
+        print(f"{token.text} [{token.start:.2f}s]")
+```
+
+### draft_tokens Property
+
+Access draft tokens (may change with more audio):
+
+```python
+with model.transcribe_stream() as transcriber:
+    transcriber.add_audio(audio_chunk)
+    
+    # Get draft tokens (list[AlignedToken])
+    draft = transcriber.draft_tokens
+    for token in draft:
+        print(f"[DRAFT] {token.text}")
+```
+
+<Note>
+  Draft tokens provide a preview of what might come next but may change as more audio is processed.
+</Note>
+
+## Real-Time Microphone Example
+
+Here's an example using PyAudio to capture real-time microphone input:
+
+```python
+import mlx.core as mx
+import numpy as np
+import pyaudio
+from parakeet_mlx import from_pretrained
+
+# Audio parameters
+SAMPLE_RATE = 16000
+CHUNK_SIZE = 1600  # 100ms at 16kHz
+
+# Load model
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Setup PyAudio
+audio = pyaudio.PyAudio()
+stream = audio.open(
+    format=pyaudio.paInt16,
+    channels=1,
+    rate=SAMPLE_RATE,
+    input=True,
+    frames_per_buffer=CHUNK_SIZE
+)
+
+print("Recording... Press Ctrl+C to stop.")
+
+try:
+    with model.transcribe_stream(context_size=(256, 256)) as transcriber:
+        while True:
+            # Read audio from microphone
+            data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+            
+            # Convert to MLX array
+            audio_chunk = np.frombuffer(data, dtype=np.int16)
+            audio_chunk = mx.array(audio_chunk).astype(mx.float32) / 32768.0
+            
+            # Process chunk
+            transcriber.add_audio(audio_chunk)
+            
+            # Display current transcription
+            result = transcriber.result
+            print(f"\rTranscription: {result.text}", end="")
+            
+except KeyboardInterrupt:
+    print("\n\nStopped.")
+    stream.stop_stream()
+    stream.close()
+    audio.terminate()
+```
+
+## Simulated Real-Time Processing
+
+If you want to test streaming with a pre-recorded file:
+
+```python
+import time
+import mlx.core as mx
+from parakeet_mlx import from_pretrained
+from parakeet_mlx.audio import load_audio
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Load audio file
+audio_data = load_audio("audio.wav", model.preprocessor_config.sample_rate)
+
+# Simulate real-time processing
+with model.transcribe_stream(context_size=(256, 256)) as transcriber:
+    chunk_size = model.preprocessor_config.sample_rate // 10  # 100ms chunks
+    
+    for i in range(0, len(audio_data), chunk_size):
+        chunk = audio_data[i:i + chunk_size]
+        
+        # Add chunk
+        transcriber.add_audio(chunk)
+        
+        # Get result
+        result = transcriber.result
+        
+        # Display with finalized vs draft distinction
+        finalized_text = " ".join(t.text for t in transcriber.finalized_tokens)
+        draft_text = " ".join(t.text for t in transcriber.draft_tokens)
+        
+        print(f"\rFinalized: {finalized_text} | Draft: [{draft_text}]", end="")
+        
+        # Simulate real-time delay
+        time.sleep(0.1)
+    
+    print(f"\n\nFinal: {transcriber.result.text}")
+```
+
+## Advanced Usage
+
+### Custom Sentence Configuration
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_words=15,      # Keep sentences short for streaming
+        silence_gap=2.0,   # Split on short pauses
+    )
+)
+
+with model.transcribe_stream(
+    context_size=(256, 256),
+    decoding_config=config
+) as transcriber:
+    # Process audio chunks
+    pass
+```
+
+### Tracking Sentence Completion
+
+```python
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+last_sentence_count = 0
+
+with model.transcribe_stream(context_size=(256, 256)) as transcriber:
+    for chunk in audio_chunks:
+        transcriber.add_audio(chunk)
+        
+        result = transcriber.result
+        current_sentence_count = len(result.sentences)
+        
+        # New sentence completed
+        if current_sentence_count > last_sentence_count:
+            new_sentence = result.sentences[last_sentence_count]
+            print(f"\nNew sentence: {new_sentence.text}")
+            last_sentence_count = current_sentence_count
+```
+
+### Accessing Timestamps in Real-Time
+
+```python
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+with model.transcribe_stream(context_size=(256, 256)) as transcriber:
+    for chunk in audio_chunks:
+        transcriber.add_audio(chunk)
+        
+        # Get finalized tokens with timestamps
+        for token in transcriber.finalized_tokens:
+            print(f"{token.start:.2f}s: {token.text}")
+```
+
+## Performance Considerations
+
+### Memory Usage
+
+<Accordion title="Reduce memory usage">
+  - Use smaller `context_size`: `(128, 128)` instead of `(512, 512)`
+  - Use lower `depth`: `depth=1` instead of higher values
+  - Use BFloat16 precision (default)
+</Accordion>
+
+### Latency vs. Accuracy
+
+<Accordion title="Lower latency">
+  - Smaller `context_size` reduces latency
+  - Smaller audio chunks (e.g., 50ms)
+  - `depth=1` for minimal cache
+</Accordion>
+
+<Accordion title="Higher accuracy">
+  - Larger `context_size` provides more context
+  - Larger audio chunks (e.g., 500ms)
+  - Higher `depth` for better consistency
+</Accordion>
+
+### Recommended Settings
+
+<Tabs>
+  <Tab title="Low Latency">
+    ```python
+    with model.transcribe_stream(
+        context_size=(128, 128),
+        depth=1
+    ) as transcriber:
+        # Process 50ms chunks
+        chunk_size = sample_rate // 20
+    ```
+  </Tab>
+  
+  <Tab title="Balanced">
+    ```python
+    with model.transcribe_stream(
+        context_size=(256, 256),
+        depth=1
+    ) as transcriber:
+        # Process 100ms chunks
+        chunk_size = sample_rate // 10
+    ```
+  </Tab>
+  
+  <Tab title="High Accuracy">
+    ```python
+    with model.transcribe_stream(
+        context_size=(512, 512),
+        depth=2
+    ) as transcriber:
+        # Process 200ms chunks
+        chunk_size = sample_rate // 5
+    ```
+  </Tab>
+</Tabs>
+
+## Comparison with Non-Streaming
+
+| Feature | Streaming | Non-Streaming |
+|---------|-----------|---------------|
+| **Latency** | Low (real-time) | High (processes entire file) |
+| **Memory** | Bounded (uses cache) | Grows with audio length |
+| **Accuracy** | Slightly lower | Slightly higher |
+| **Use Case** | Live transcription | Batch processing |
+| **Context** | Limited by window | Full audio context |
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title="Audio chunk format errors">
+  Ensure audio chunks are:
+  - 1D `mx.array` objects
+  - Float32 or BFloat16 dtype
+  - Normalized to [-1.0, 1.0] range
+  - Correct sample rate (usually 16kHz)
+  
+  ```python
+  # Correct format
+  audio_chunk = mx.array(audio_data).astype(mx.float32) / 32768.0
+  ```
+</Accordion>
+
+<Accordion title="High memory usage">
+  - Reduce `context_size`
+  - Use `depth=1`
+  - Process smaller chunks
+  - Use BFloat16 (default)
+</Accordion>
+
+<Accordion title="Poor transcription quality">
+  - Increase `context_size`
+  - Use larger audio chunks
+  - Ensure good audio quality (16kHz, mono)
+  - Check microphone input level
+</Accordion>
+
+<Accordion title="High latency">
+  - Reduce `context_size`
+  - Use smaller audio chunks
+  - Use `depth=1`
+  - Ensure hardware acceleration is working
+</Accordion>
+
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Python API" icon="code" href="/guides/python-api">
+    Explore the full Python API
+  </Card>
+  <Card title="Chunking" icon="scissors" href="/guides/chunking">
+    Learn about batch chunking for long files
+  </Card>
+  <Card title="Output Formats" icon="file-lines" href="/guides/output-formats">
+    Export transcriptions in different formats
+  </Card>
+  <Card title="Examples" icon="lightbulb" href="/examples">
+    See more streaming examples
+  </Card>
+</CardGroup>

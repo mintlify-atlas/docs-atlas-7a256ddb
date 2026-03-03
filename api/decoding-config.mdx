@@ -1,0 +1,168 @@
+---
+title: 'DecodingConfig'
+description: 'Configuration for decoding behavior and sentence splitting'
+icon: 'sliders'
+---
+
+`DecodingConfig` is a dataclass that controls how the model decodes audio and splits text into sentences.
+
+## Class Definition
+
+```python
+from parakeet_mlx import DecodingConfig, Greedy, Beam, SentenceConfig
+
+config = DecodingConfig(
+    decoding=Greedy(),
+    sentence=SentenceConfig()
+)
+```
+
+## Fields
+
+<ResponseField name="decoding" type="Union[Greedy, Beam]" default="Greedy()">
+  The decoding strategy to use. Can be either `Greedy()` for greedy decoding or `Beam()` for beam search decoding.
+  
+  See [Greedy](#greedy) and [Beam](#beam) below for configuration options.
+</ResponseField>
+
+<ResponseField name="sentence" type="SentenceConfig" default="SentenceConfig()">
+  Configuration for how to split transcribed text into sentences.
+  
+  See [SentenceConfig](/api/sentence-config) for configuration options.
+</ResponseField>
+
+---
+
+## Greedy
+
+Greedy decoding selects the most likely token at each step. This is the fastest decoding method.
+
+```python
+from parakeet_mlx import DecodingConfig, Greedy
+
+config = DecodingConfig(decoding=Greedy())
+```
+
+Greedy decoding has no configuration parameters.
+
+---
+
+## Beam
+
+Beam search decoding explores multiple hypotheses to find better transcriptions. Currently only available for TDT models.
+
+```python
+from parakeet_mlx import DecodingConfig, Beam
+
+config = DecodingConfig(
+    decoding=Beam(
+        beam_size=5,
+        length_penalty=1.0,
+        patience=1.0,
+        duration_reward=0.7
+    )
+)
+```
+
+### Fields
+
+<ResponseField name="beam_size" type="int" default="5">
+  Number of hypotheses to explore simultaneously. Larger values may improve accuracy but increase computation time.
+  
+  **Example:** `beam_size=5`
+</ResponseField>
+
+<ResponseField name="length_penalty" type="float" default="1.0">
+  Penalty applied based on sequence length. Higher values favor longer sequences.
+  
+  - `1.0`: No penalty
+  - `> 1.0`: Favor longer sequences
+  - `< 1.0`: Favor shorter sequences
+  
+  **Example:** `length_penalty=0.013`
+</ResponseField>
+
+<ResponseField name="patience" type="float" default="1.0">
+  Controls how many candidate hypotheses to explore. Higher values allow more exploration.
+  
+  The maximum number of candidates is `beam_size * patience`.
+  
+  **Example:** `patience=3.5`
+</ResponseField>
+
+<ResponseField name="duration_reward" type="float" default="0.7">
+  **TDT-only parameter.** Controls the balance between token logprobs and duration logprobs.
+  
+  - `0.0`: Only consider token logprobs
+  - `0.5`: Equal weight to both
+  - `1.0`: Only consider duration logprobs
+  
+  **Example:** `duration_reward=0.67`
+</ResponseField>
+
+---
+
+## Examples
+
+### Greedy Decoding
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, Greedy
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(decoding=Greedy())
+result = model.transcribe("audio.wav", decoding_config=config)
+
+print(result.text)
+```
+
+### Beam Search Decoding
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, Beam
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    decoding=Beam(
+        beam_size=5,
+        length_penalty=0.013,
+        patience=3.5,
+        duration_reward=0.67
+    )
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+print(result.text)
+```
+
+### With Sentence Configuration
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, Beam, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    decoding=Beam(beam_size=5),
+    sentence=SentenceConfig(
+        max_words=30,
+        silence_gap=5.0,
+        max_duration=40.0
+    )
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+
+for sentence in result.sentences:
+    print(f"{sentence.start:.2f}s - {sentence.end:.2f}s: {sentence.text}")
+```
+
+---
+
+## Related
+
+- [SentenceConfig](/api/sentence-config) - Configure sentence splitting
+- [BaseParakeet](/api/base-parakeet) - Use DecodingConfig with model methods
+- [Beam Decoding Guide](/advanced/beam-decoding) - Learn more about beam search

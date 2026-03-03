@@ -1,0 +1,211 @@
+---
+title: 'SentenceConfig'
+description: 'Configuration for splitting transcription into sentences'
+icon: 'paragraph'
+---
+
+`SentenceConfig` is a dataclass that controls how transcribed text is split into sentences based on punctuation, silence gaps, word count, or duration.
+
+## Class Definition
+
+```python
+from parakeet_mlx import SentenceConfig
+
+config = SentenceConfig(
+    max_words=None,
+    silence_gap=None,
+    max_duration=None
+)
+```
+
+## Fields
+
+<ResponseField name="max_words" type="int | None" default="None">
+  Maximum number of words allowed in a single sentence. When the next token would exceed this limit, a sentence break is created.
+  
+  Set to `None` to disable word-based splitting.
+  
+  **Example:** `max_words=30`
+</ResponseField>
+
+<ResponseField name="silence_gap" type="float | None" default="None">
+  Minimum silence duration (in seconds) that triggers a sentence split. When the gap between tokens exceeds this threshold, a new sentence is created.
+  
+  Set to `None` to disable silence-based splitting.
+  
+  **Example:** `silence_gap=5.0`
+</ResponseField>
+
+<ResponseField name="max_duration" type="float | None" default="None">
+  Maximum duration (in seconds) allowed for a single sentence. When a sentence reaches this duration, it is split even if no other conditions are met.
+  
+  Set to `None` to disable duration-based splitting.
+  
+  **Example:** `max_duration=40.0`
+</ResponseField>
+
+---
+
+## Splitting Behavior
+
+Sentences are automatically split at punctuation marks (`.`, `!`, `?`, `。`, `？`, `！`). Additional splits occur when any of the following conditions are met:
+
+1. **Punctuation**: Token contains sentence-ending punctuation
+2. **Word limit**: Next token would exceed `max_words` (if set)
+3. **Silence gap**: Gap between current and next token exceeds `silence_gap` (if set)
+4. **Duration limit**: Sentence duration exceeds `max_duration` (if set)
+
+---
+
+## Examples
+
+### Default Configuration
+
+By default, sentences are only split at punctuation:
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Default: only split on punctuation
+config = DecodingConfig(sentence=SentenceConfig())
+result = model.transcribe("audio.wav", decoding_config=config)
+
+for sentence in result.sentences:
+    print(sentence.text)
+```
+
+### Limit Words per Sentence
+
+Split long sentences to keep them under 30 words:
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(max_words=30)
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+
+for sentence in result.sentences:
+    word_count = len([t for t in sentence.tokens if " " in t.text])
+    print(f"{word_count} words: {sentence.text}")
+```
+
+### Split on Long Silences
+
+Create sentence breaks when silence exceeds 5 seconds:
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(silence_gap=5.0)
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+
+for sentence in result.sentences:
+    print(f"[{sentence.start:.1f}s - {sentence.end:.1f}s] {sentence.text}")
+```
+
+### Limit Sentence Duration
+
+Keep sentences under 40 seconds:
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(max_duration=40.0)
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+
+for sentence in result.sentences:
+    print(f"Duration: {sentence.duration:.1f}s - {sentence.text}")
+```
+
+### Combine Multiple Constraints
+
+Use all splitting criteria together:
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_words=30,       # Max 30 words
+        silence_gap=5.0,    # Split on 5+ second silences
+        max_duration=40.0   # Max 40 second duration
+    )
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+
+for i, sentence in enumerate(result.sentences, 1):
+    print(f"Sentence {i}: [{sentence.start:.1f}s - {sentence.end:.1f}s]")
+    print(f"  {sentence.text}")
+    print()
+```
+
+---
+
+## Use Cases
+
+### Subtitle Generation
+
+For video subtitles, limit words and duration to fit on screen:
+
+```python
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_words=15,       # Short lines for readability
+        max_duration=5.0    # Quick screen changes
+    )
+)
+```
+
+### Meeting Transcription
+
+For meeting notes, split on natural pauses:
+
+```python
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        silence_gap=3.0,    # Split on speaker pauses
+        max_duration=30.0   # Keep paragraphs manageable
+    )
+)
+```
+
+### Podcast Transcription
+
+For long-form content with natural flow:
+
+```python
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_words=40,       # Allow longer sentences
+        silence_gap=8.0     # Only split on significant pauses
+    )
+)
+```
+
+---
+
+## Related
+
+- [DecodingConfig](/api/decoding-config) - Parent configuration class
+- [AlignedSentence](/api/aligned-sentence) - Sentence objects created by this config
+- [Sentence Splitting Guide](/advanced/sentence-splitting) - Learn more about sentence splitting strategies

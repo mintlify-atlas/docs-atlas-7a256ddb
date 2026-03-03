@@ -1,0 +1,519 @@
+---
+title: Low-Level API
+description: Direct access to audio preprocessing and model internals
+---
+
+The low-level API provides direct access to Parakeet MLX's audio preprocessing pipeline and model internals. Use this when you need fine-grained control over feature extraction, batch processing, or integration with custom audio pipelines.
+
+## Overview
+
+The high-level `transcribe()` method handles everything automatically:
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")  # Loads, preprocesses, and transcribes
+```
+
+The low-level API breaks this into explicit steps:
+
+```python
+from parakeet_mlx import from_pretrained
+from parakeet_mlx.audio import load_audio, get_logmel
+import mlx.core as mx
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# 1. Load audio
+audio = load_audio("audio.wav", model.preprocessor_config.sample_rate)
+
+# 2. Extract log-mel spectrogram
+mel = get_logmel(audio, model.preprocessor_config)
+
+# 3. Generate transcription
+alignments = model.generate(mel)
+
+print(alignments[0].text)
+```
+
+## Loading Audio
+
+### From File
+
+```python
+from parakeet_mlx.audio import load_audio
+import mlx.core as mx
+
+# Load with automatic resampling
+audio = load_audio(
+    "audio.wav",
+    sampling_rate=16000,
+    dtype=mx.bfloat16,
+)
+
+print(audio.shape)  # (num_samples,)
+print(audio.dtype)  # bfloat16
+```
+
+**Implementation** (from `audio.py:51-76`):
+
+```python
+def load_audio(
+    filename: Path, sampling_rate: int, dtype: mx.Dtype = mx.bfloat16
+) -> mx.array:
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError("FFmpeg is not installed or not in your PATH.")
+    
+    cmd = ["ffmpeg", "-nostdin", "-i", str(filename)]
+    cmd.extend([
+        "-threads", "0",
+        "-f", "s16le",
+        "-ac", "1",
+        "-acodec", "pcm_s16le",
+        "-ar", str(sampling_rate),
+        "-",
+    ])
+    
+    out = run(cmd, capture_output=True, check=True).stdout
+    return mx.array(np.frombuffer(out, np.int16).flatten()).astype(mx.float32) / 32768.0
+```
+
+<Info>
+`load_audio` requires FFmpeg to be installed. It handles all audio formats that FFmpeg supports (WAV, MP3, FLAC, M4A, etc.) and automatically converts to mono 16kHz.
+</Info>
+
+### From NumPy Array
+
+```python
+import mlx.core as mx
+import numpy as np
+
+# Convert NumPy array to MLX
+audio_np = np.load("audio.npy")  # Shape: (samples,)
+audio = mx.array(audio_np)
+
+# Ensure correct dtype
+audio = audio.astype(mx.bfloat16)
+```
+
+### From Raw Samples
+
+```python
+import mlx.core as mx
+import soundfile as sf
+
+# Load with soundfile
+audio_np, sr = sf.read("audio.wav")
+
+# Convert to MLX
+audio = mx.array(audio_np, dtype=mx.bfloat16)
+
+# Resample if needed
+if sr != 16000:
+    from librosa import resample
+    audio_np = resample(audio_np, orig_sr=sr, target_sr=16000)
+    audio = mx.array(audio_np, dtype=mx.bfloat16)
+```
+
+## Log-Mel Spectrogram Extraction
+
+### Basic Usage
+
+```python
+from parakeet_mlx.audio import get_logmel, load_audio
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Load audio
+audio = load_audio("audio.wav", model.preprocessor_config.sample_rate)
+
+# Extract log-mel spectrogram
+mel = get_logmel(audio, model.preprocessor_config)
+
+print(mel.shape)  # (1, time_frames, mel_features)
+print(mel.dtype)  # bfloat16
+```
+
+**Implementation** (from `audio.py:137-181`):
+
+```python
+def get_logmel(x: mx.array, args: PreprocessArgs) -> mx.array:
+    original_dtype = x.dtype
+    
+    # Padding
+    if args.pad_to > 0:
+        if x.shape[-1] < args.pad_to:
+            pad_length = args.pad_to - x.shape[-1]
+            x = mx.pad(x, ((0, pad_length),), constant_values=args.pad_value)
+    
+    # Pre-emphasis filter
+    if args.preemph is not None:
+        x = mx.concat([x[:1], x[1:] - args.preemph * x[:-1]], axis=0)
+    
+    # STFT
+    window = hanning(args.win_length).astype(x.dtype)
+    x = stft(x, args.n_fft, args.hop_length, args.win_length, window)
+    
+    # Magnitude
+    abs_val = mx.abs(mx.view(x, original_dtype))
+    x = abs_val[..., ::2] + abs_val[..., 1::2]
+    
+    # Power
+    if args.mag_power != 1.0:
+        x = mx.power(x, args.mag_power)
+    
+    # Mel filterbank
+    x = mx.matmul(args._filterbanks.astype(x.dtype), x.T)
+    
+    # Log compression
+    x = mx.log(x + 1e-5)
+    
+    # Normalization
+    if args.normalize == "per_feature":
+        mean = mx.mean(x, axis=1, keepdims=True)
+        std = mx.std(x, axis=1, keepdims=True)
+        normalized_mel = (x - mean) / (std + 1e-5)
+    else:
+        mean = mx.mean(x)
+        std = mx.std(x)
+        normalized_mel = (x - mean) / (std + 1e-5)
+    
+    normalized_mel = normalized_mel.T
+    normalized_mel = mx.expand_dims(normalized_mel, axis=0)
+    
+    return normalized_mel.astype(original_dtype)
+```
+
+### Preprocessing Configuration
+
+Access preprocessing parameters:
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = model.preprocessor_config
+print(f"Sample rate: {config.sample_rate}")
+print(f"Window size: {config.window_size}")
+print(f"Window stride: {config.window_stride}")
+print(f"FFT size: {config.n_fft}")
+print(f"Mel features: {config.features}")
+print(f"Window: {config.window}")
+print(f"Normalization: {config.normalize}")
+print(f"Pre-emphasis: {config.preemph}")
+```
+
+Typical values:
+- `sample_rate`: 16000
+- `window_size`: 0.025 (25ms)
+- `window_stride`: 0.01 (10ms)
+- `n_fft`: 512
+- `features`: 80 (mel bins)
+- `window`: "hann" or "hamming"
+
+### Custom Preprocessing
+
+```python
+from parakeet_mlx.audio import PreprocessArgs, get_logmel
+import mlx.core as mx
+
+# Create custom preprocessing config
+custom_config = PreprocessArgs(
+    sample_rate=16000,
+    normalize="per_feature",
+    window_size=0.025,
+    window_stride=0.01,
+    window="hann",
+    features=80,
+    n_fft=512,
+    dither=0.0,
+    preemph=0.97,
+    mag_power=2.0,
+)
+
+# Apply to audio
+audio = mx.random.normal((16000,))  # 1 second of audio
+mel = get_logmel(audio, custom_config)
+```
+
+<Warning>
+Custom preprocessing configurations may not work well with pretrained models, which expect specific feature dimensions and normalization schemes.
+</Warning>
+
+## Direct Model Generation
+
+### Single Input
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, Beam
+from parakeet_mlx.audio import load_audio, get_logmel
+import mlx.core as mx
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Prepare log-mel spectrogram
+audio = load_audio("audio.wav", model.preprocessor_config.sample_rate)
+mel = get_logmel(audio, model.preprocessor_config)
+
+# Generate with custom config
+config = DecodingConfig(decoding=Beam(beam_size=5))
+alignments = model.generate(mel, decoding_config=config)
+
+result = alignments[0]  # Always returns a list
+print(result.text)
+```
+
+### Batch Processing
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig
+from parakeet_mlx.audio import load_audio, get_logmel
+import mlx.core as mx
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Load multiple audio files
+files = ["audio1.wav", "audio2.wav", "audio3.wav"]
+audio_list = [load_audio(f, model.preprocessor_config.sample_rate) for f in files]
+
+# Extract features
+mel_list = [get_logmel(audio, model.preprocessor_config) for audio in audio_list]
+
+# Pad to same length for batching
+max_len = max(mel.shape[1] for mel in mel_list)
+mel_batch = mx.stack([
+    mx.pad(mel, ((0, 0), (0, max_len - mel.shape[1]), (0, 0)))
+    for mel in mel_list
+])
+
+print(mel_batch.shape)  # (batch_size, max_time, features)
+
+# Generate for batch
+alignments = model.generate(mel_batch)
+
+for i, result in enumerate(alignments):
+    print(f"{files[i]}: {result.text}")
+```
+
+<Tip>
+Batch processing can be more efficient than processing files individually, especially for many short audio clips.
+</Tip>
+
+## Encoder Access
+
+Access encoder features directly:
+
+```python
+from parakeet_mlx import from_pretrained
+from parakeet_mlx.audio import load_audio, get_logmel
+import mlx.core as mx
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Prepare input
+audio = load_audio("audio.wav", model.preprocessor_config.sample_rate)
+mel = get_logmel(audio, model.preprocessor_config)
+
+# Run encoder
+features, lengths = model.encoder(mel)
+
+print(features.shape)  # (batch, time_frames, hidden_dim)
+print(lengths)         # Sequence lengths
+
+# Access encoder embeddings for downstream tasks
+embeddings = features[0]  # (time_frames, hidden_dim)
+```
+
+## Decoder Access (TDT/RNNT only)
+
+For TDT and RNNT models, access the decoder directly:
+
+```python
+from parakeet_mlx import from_pretrained
+from parakeet_mlx.audio import load_audio, get_logmel
+from parakeet_mlx import DecodingConfig
+import mlx.core as mx
+from typing import cast
+from parakeet_mlx.parakeet import ParakeetTDT
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+model = cast(ParakeetTDT, model)  # Type hint for linters
+
+# Prepare input
+audio = load_audio("audio.wav", model.preprocessor_config.sample_rate)
+mel = get_logmel(audio, model.preprocessor_config)
+
+# Run encoder
+features, lengths = model.encoder(mel)
+
+# Run decoder
+tokens, hidden_state = model.decode(
+    features,
+    lengths,
+    last_token=None,
+    hidden_state=None,
+    config=DecodingConfig(),
+)
+
+print(tokens)  # List of list of AlignedToken
+```
+
+## Time Ratio Calculation
+
+Understand the time mapping between audio samples and encoder frames:
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Time per encoder frame (in seconds)
+time_ratio = model.time_ratio
+
+print(f"Time per frame: {time_ratio:.4f} seconds")
+print(f"Frames per second: {1/time_ratio:.2f}")
+
+# Convert frame index to time
+frame_idx = 100
+time_seconds = frame_idx * time_ratio
+print(f"Frame {frame_idx} = {time_seconds:.2f}s")
+```
+
+**Implementation** (from `parakeet.py:107-113`):
+
+```python
+@property
+def time_ratio(self) -> float:
+    return (
+        self.encoder_config.subsampling_factor
+        / self.preprocessor_config.sample_rate
+        * self.preprocessor_config.hop_length
+    )
+```
+
+## Custom Audio Pipeline Integration
+
+```python
+from parakeet_mlx import from_pretrained
+from parakeet_mlx.audio import get_logmel
+import mlx.core as mx
+import numpy as np
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Custom audio pipeline
+def process_audio_stream(audio_stream):
+    """Process audio from custom source"""
+    for chunk in audio_stream:
+        # Your custom preprocessing
+        processed = apply_noise_reduction(chunk)
+        processed = apply_vad(processed)
+        
+        # Convert to MLX
+        audio_mlx = mx.array(processed, dtype=mx.bfloat16)
+        
+        # Extract features
+        mel = get_logmel(audio_mlx, model.preprocessor_config)
+        
+        # Transcribe
+        result = model.generate(mel)[0]
+        
+        yield result.text
+
+# Use with custom stream
+for transcription in process_audio_stream(my_audio_source):
+    print(transcription)
+```
+
+## Performance Optimization
+
+### Dtype Selection
+
+```python
+import mlx.core as mx
+from parakeet_mlx.audio import load_audio, get_logmel
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# bfloat16 (faster, less memory)
+audio_bf16 = load_audio("audio.wav", 16000, dtype=mx.bfloat16)
+mel_bf16 = get_logmel(audio_bf16, model.preprocessor_config)
+
+# float32 (higher precision)
+audio_fp32 = load_audio("audio.wav", 16000, dtype=mx.float32)
+mel_fp32 = get_logmel(audio_fp32, model.preprocessor_config)
+```
+
+<Info>
+`bfloat16` is recommended for Apple Silicon, providing good accuracy with 2x memory savings and faster computation.
+</Info>
+
+### Memory Management
+
+```python
+import mlx.core as mx
+from parakeet_mlx import from_pretrained
+from parakeet_mlx.audio import load_audio, get_logmel
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+for audio_file in large_file_list:
+    audio = load_audio(audio_file, model.preprocessor_config.sample_rate)
+    mel = get_logmel(audio, model.preprocessor_config)
+    
+    result = model.generate(mel)[0]
+    save_result(result)
+    
+    # Clean up
+    del audio, mel
+    mx.eval(mx.array([]))  # Force evaluation
+    mx.clear_cache()       # Clear MLX cache
+```
+
+## Complete Example
+
+```python
+import mlx.core as mx
+from parakeet_mlx import from_pretrained, DecodingConfig, Beam, SentenceConfig
+from parakeet_mlx.audio import load_audio, get_logmel
+
+# Load model
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Configure decoding
+config = DecodingConfig(
+    decoding=Beam(beam_size=5, length_penalty=1.0, patience=3.5, duration_reward=0.7),
+    sentence=SentenceConfig(max_words=30, silence_gap=2.0, max_duration=40.0),
+)
+
+# Load audio
+audio = load_audio("audio.wav", model.preprocessor_config.sample_rate, dtype=mx.bfloat16)
+print(f"Loaded audio: {audio.shape[0] / 16000:.2f} seconds")
+
+# Extract log-mel spectrogram
+mel = get_logmel(audio, model.preprocessor_config)
+print(f"Mel spectrogram: {mel.shape}")
+
+# Generate transcription
+alignments = model.generate(mel, decoding_config=config)
+result = alignments[0]
+
+# Print results
+print(f"\nTranscription: {result.text}\n")
+
+for i, sentence in enumerate(result.sentences, 1):
+    print(f"Sentence {i}:")
+    print(f"  [{sentence.start:.2f}s - {sentence.end:.2f}s] {sentence.text}")
+    print(f"  Confidence: {sentence.confidence:.2%}")
+    print()
+```
+
+## Related
+
+- [Beam Decoding](/advanced/beam-decoding) - Control decoding strategy
+- [Sentence Splitting](/advanced/sentence-splitting) - Configure segmentation
+- [Local Attention](/advanced/local-attention) - Memory optimization

@@ -1,0 +1,563 @@
+---
+title: Chunking Long Audio
+description: Efficiently process long audio files using chunking with overlap
+icon: scissors
+---
+
+Chunking allows you to process long audio files by splitting them into smaller, manageable segments. Parakeet MLX handles chunking automatically with intelligent overlap merging to maintain transcription quality.
+
+## Why Use Chunking?
+
+<CardGroup cols={2}>
+  <Card title="Memory Efficiency" icon="memory">
+    Process arbitrarily long audio files without running out of memory
+  </Card>
+  <Card title="Parallelization" icon="bolt">
+    Chunks can be processed with better memory locality
+  </Card>
+  <Card title="Progress Tracking" icon="chart-line">
+    Monitor progress through long transcription jobs
+  </Card>
+  <Card title="Reliability" icon="shield-check">
+    Handle very long recordings that might otherwise fail
+  </Card>
+</CardGroup>
+
+## Basic Usage
+
+### CLI
+
+```bash
+parakeet-mlx long_audio.mp3 \
+  --chunk-duration 120 \
+  --overlap-duration 15
+```
+
+### Python API
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+result = model.transcribe(
+    "long_audio.wav",
+    chunk_duration=120.0,      # 2 minutes per chunk
+    overlap_duration=15.0,     # 15 seconds overlap
+)
+
+print(result.text)
+```
+
+## Parameters
+
+### chunk_duration
+
+<ParamField path="chunk_duration" type="float" default="120.0">
+  Duration of each audio chunk in seconds. Set to `None` or `0` to disable chunking and process the entire file at once.
+  
+  **Recommended values:**
+  - 60-120 seconds for most use cases
+  - 180-300 seconds for high-memory systems
+  - 30-60 seconds for low-memory systems
+</ParamField>
+
+```python
+# Disable chunking
+result = model.transcribe("audio.wav", chunk_duration=None)
+
+# Short chunks (lower memory)
+result = model.transcribe("audio.wav", chunk_duration=60.0)
+
+# Long chunks (higher memory, potentially better accuracy)
+result = model.transcribe("audio.wav", chunk_duration=180.0)
+```
+
+### overlap_duration
+
+<ParamField path="overlap_duration" type="float" default="15.0">
+  Overlap between consecutive chunks in seconds. Overlap is used to merge chunk boundaries smoothly and avoid cutting words.
+  
+  **Recommended values:**
+  - 10-15 seconds for most use cases
+  - 20-30 seconds for dense speech
+  - 5-10 seconds for sparse speech
+</ParamField>
+
+```python
+# Minimal overlap (faster but may cut words)
+result = model.transcribe(
+    "audio.wav",
+    chunk_duration=120.0,
+    overlap_duration=5.0
+)
+
+# Standard overlap (recommended)
+result = model.transcribe(
+    "audio.wav",
+    chunk_duration=120.0,
+    overlap_duration=15.0
+)
+
+# Large overlap (better merging, slower)
+result = model.transcribe(
+    "audio.wav",
+    chunk_duration=120.0,
+    overlap_duration=30.0
+)
+```
+
+## How Chunking Works
+
+<Steps>
+
+<Step title="Split audio into chunks">
+  The audio file is split into overlapping chunks based on `chunk_duration` and `overlap_duration`.
+  
+  ```
+  Audio:  [=====================================]
+  Chunk 1: [=============]
+  Chunk 2:         [=============]
+  Chunk 3:                 [=============]
+                   ^overlap^
+  ```
+</Step>
+
+<Step title="Transcribe each chunk">
+  Each chunk is transcribed independently with accurate timestamps relative to the chunk start.
+</Step>
+
+<Step title="Merge overlapping regions">
+  Parakeet MLX uses two strategies to merge overlapping regions:
+  
+  1. **Longest Contiguous Subsequence** (default): Finds the longest matching sequence of tokens between overlapping regions
+  2. **Longest Common Subsequence** (fallback): Uses dynamic programming to find the best alignment
+</Step>
+
+<Step title="Adjust timestamps">
+  All timestamps are adjusted to be relative to the start of the original audio file.
+</Step>
+
+</Steps>
+
+## Progress Tracking
+
+### CLI Progress Bar
+
+The CLI automatically shows a progress bar when processing chunks:
+
+```bash
+parakeet-mlx long_audio.mp3 --chunk-duration 120
+# ⠹ Processing audio.mp3... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 65%
+```
+
+### Python Callback
+
+Use a callback function to track progress:
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+def progress_callback(current_samples, total_samples):
+    """Called after each chunk is processed.
+    
+    Args:
+        current_samples: Number of samples processed so far
+        total_samples: Total number of samples in the audio
+    """
+    progress = (current_samples / total_samples) * 100
+    print(f"Progress: {progress:.1f}%", end="\r")
+
+result = model.transcribe(
+    "long_audio.wav",
+    chunk_duration=120.0,
+    overlap_duration=15.0,
+    chunk_callback=progress_callback
+)
+
+print(f"\nComplete: {result.text}")
+```
+
+### Detailed Progress Tracking
+
+```python
+from parakeet_mlx import from_pretrained
+import time
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+chunk_count = 0
+start_time = time.time()
+
+def detailed_progress(current_samples, total_samples):
+    global chunk_count
+    chunk_count += 1
+    
+    progress = (current_samples / total_samples) * 100
+    elapsed = time.time() - start_time
+    
+    if progress > 0:
+        estimated_total = elapsed / (progress / 100)
+        remaining = estimated_total - elapsed
+        
+        print(
+            f"Chunk {chunk_count} | "
+            f"Progress: {progress:.1f}% | "
+            f"Elapsed: {elapsed:.1f}s | "
+            f"Remaining: {remaining:.1f}s",
+            end="\r"
+        )
+
+result = model.transcribe(
+    "long_audio.wav",
+    chunk_duration=120.0,
+    overlap_duration=15.0,
+    chunk_callback=detailed_progress
+)
+
+print(f"\nProcessed {chunk_count} chunks in {time.time() - start_time:.1f}s")
+```
+
+## Merge Strategies
+
+Parakeet MLX uses two merge strategies to handle overlapping regions:
+
+### Longest Contiguous Subsequence (Primary)
+
+Finds the longest continuous matching sequence between overlapping regions:
+
+```python
+# Implemented in parakeet_mlx/alignment.py:merge_longest_contiguous()
+all_tokens = merge_longest_contiguous(
+    all_tokens,
+    chunk_result.tokens,
+    overlap_duration=overlap_duration,
+)
+```
+
+This strategy:
+- ✅ Fast and efficient
+- ✅ Works well when overlap matches closely
+- ❌ May fail if overlap regions differ significantly
+
+### Longest Common Subsequence (Fallback)
+
+Uses dynamic programming to find the best alignment:
+
+```python
+# Fallback if longest contiguous fails
+try:
+    all_tokens = merge_longest_contiguous(...)
+except RuntimeError:
+    all_tokens = merge_longest_common_subsequence(...)
+```
+
+This strategy:
+- ✅ More robust to differences
+- ✅ Handles insertions/deletions
+- ⚠️ Slightly slower
+
+<Note>
+  The merge strategy is automatically selected - longest contiguous is tried first, with longest common subsequence as a fallback if the first strategy fails.
+</Note>
+
+## Optimizing Chunk Parameters
+
+### For Maximum Accuracy
+
+```python
+result = model.transcribe(
+    "audio.wav",
+    chunk_duration=180.0,      # Longer chunks
+    overlap_duration=30.0,     # More overlap
+)
+```
+
+**Trade-offs:**
+- ✅ Better context for the model
+- ✅ Better overlap merging
+- ❌ Higher memory usage
+- ❌ Slower processing
+
+### For Maximum Speed
+
+```python
+result = model.transcribe(
+    "audio.wav",
+    chunk_duration=60.0,       # Shorter chunks
+    overlap_duration=10.0,     # Less overlap
+)
+```
+
+**Trade-offs:**
+- ✅ Lower memory usage
+- ✅ Faster processing
+- ❌ Less context for model
+- ❌ Potential boundary issues
+
+### For Memory-Constrained Systems
+
+```python
+import mlx.core as mx
+
+model = from_pretrained(
+    "mlx-community/parakeet-tdt-0.6b-v3",
+    dtype=mx.bfloat16  # Lower precision
+)
+
+result = model.transcribe(
+    "audio.wav",
+    dtype=mx.bfloat16,
+    chunk_duration=60.0,       # Short chunks
+    overlap_duration=10.0,     # Minimal overlap
+)
+```
+
+<Tip>
+  Combine short chunks with local attention for even lower memory usage:
+  ```python
+  model.encoder.set_attention_model("rel_pos_local_attn", (256, 256))
+  result = model.transcribe("audio.wav", chunk_duration=60.0)
+  ```
+</Tip>
+
+### Recommended Configurations
+
+<Tabs>
+  <Tab title="Balanced (Default)">
+    ```python
+    result = model.transcribe(
+        "audio.wav",
+        chunk_duration=120.0,
+        overlap_duration=15.0,
+    )
+    ```
+    Good balance of speed, accuracy, and memory usage.
+  </Tab>
+  
+  <Tab title="High Accuracy">
+    ```python
+    from parakeet_mlx import DecodingConfig, Beam
+    
+    result = model.transcribe(
+        "audio.wav",
+        chunk_duration=180.0,
+        overlap_duration=30.0,
+        decoding_config=DecodingConfig(
+            decoding=Beam(beam_size=10)
+        ),
+    )
+    ```
+    Best accuracy for important transcriptions.
+  </Tab>
+  
+  <Tab title="Low Memory">
+    ```python
+    result = model.transcribe(
+        "audio.wav",
+        dtype=mx.bfloat16,
+        chunk_duration=60.0,
+        overlap_duration=10.0,
+    )
+    ```
+    Minimal memory footprint.
+  </Tab>
+  
+  <Tab title="Fast Processing">
+    ```python
+    result = model.transcribe(
+        "audio.wav",
+        chunk_duration=60.0,
+        overlap_duration=10.0,
+    )
+    ```
+    Quick transcription for drafts.
+  </Tab>
+</Tabs>
+
+## When to Disable Chunking
+
+Disable chunking (`chunk_duration=None` or `chunk_duration=0`) when:
+
+<CardGroup cols={2}>
+  <Card title="Short Audio" icon="clock">
+    Audio files under 2-3 minutes can typically be processed without chunking
+  </Card>
+  <Card title="Maximum Accuracy" icon="bullseye">
+    Full audio context may improve accuracy for some use cases
+  </Card>
+  <Card title="Sufficient Memory" icon="microchip">
+    High-memory systems can process longer audio without chunking
+  </Card>
+  <Card title="Batch Processing" icon="layer-group">
+    When using custom batching strategies
+  </Card>
+</CardGroup>
+
+```python
+# Disable chunking for short audio
+result = model.transcribe("short_audio.wav", chunk_duration=None)
+
+# Or explicitly set to 0
+result = model.transcribe("short_audio.wav", chunk_duration=0)
+```
+
+## CLI Examples
+
+<CodeGroup>
+
+```bash Default chunking
+parakeet-mlx long_podcast.mp3
+# Uses default: chunk_duration=120, overlap_duration=15
+```
+
+```bash Custom chunk size
+parakeet-mlx long_podcast.mp3 --chunk-duration 180
+```
+
+```bash Disable chunking
+parakeet-mlx short_audio.mp3 --chunk-duration 0
+```
+
+```bash Low memory mode
+parakeet-mlx long_podcast.mp3 \
+  --chunk-duration 60 \
+  --overlap-duration 10 \
+  --bf16
+```
+
+```bash High accuracy mode
+parakeet-mlx long_podcast.mp3 \
+  --chunk-duration 180 \
+  --overlap-duration 30 \
+  --decoding beam \
+  --beam-size 10
+```
+
+```bash With environment variables
+export PARAKEET_CHUNK_DURATION=90
+export PARAKEET_OVERLAP_DURATION=20
+parakeet-mlx long_podcast.mp3
+```
+
+</CodeGroup>
+
+## Chunking vs. Streaming
+
+| Feature | Chunking | Streaming |
+|---------|----------|----------|
+| **Purpose** | Process long files | Real-time transcription |
+| **Context** | Full chunk context | Limited by window |
+| **Memory** | Per-chunk peak | Bounded by cache |
+| **Latency** | High (batch) | Low (real-time) |
+| **Accuracy** | Higher | Slightly lower |
+| **Use Case** | Batch processing | Live captioning |
+| **Implementation** | `transcribe()` with chunks | `transcribe_stream()` |
+
+See the [Streaming Guide](/guides/streaming) for real-time transcription.
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title="Out of memory errors">
+  Solutions:
+  1. Reduce `chunk_duration`: `--chunk-duration 60`
+  2. Use BFloat16: `--bf16`
+  3. Reduce overlap: `--overlap-duration 10`
+  4. Use local attention: `--local-attention`
+</Accordion>
+
+<Accordion title="Words cut off at boundaries">
+  Solutions:
+  1. Increase `overlap_duration`: `--overlap-duration 20`
+  2. Use longer chunks: `--chunk-duration 180`
+  3. The overlap merging should handle this automatically, but more overlap helps
+</Accordion>
+
+<Accordion title="Slow processing">
+  Solutions:
+  1. Reduce `chunk_duration` for better memory locality
+  2. Reduce `overlap_duration` for less merging work
+  3. Use greedy decoding: `--decoding greedy`
+  4. Use BFloat16: `--bf16`
+</Accordion>
+
+<Accordion title="Inconsistent timestamps">
+  This shouldn't happen as timestamps are automatically adjusted. If you see issues:
+  1. Check that audio file isn't corrupted
+  2. Try different overlap settings
+  3. Report as a bug if persistent
+</Accordion>
+
+</AccordionGroup>
+
+## Implementation Details
+
+From the source code (`parakeet_mlx/parakeet.py:166-221`):
+
+```python
+def transcribe(self, path, *, chunk_duration=None, overlap_duration=15.0, ...):
+    # Load audio
+    audio_data = load_audio(audio_path, self.preprocessor_config.sample_rate, dtype)
+    
+    # Check if chunking is needed
+    if chunk_duration is None:
+        mel = get_logmel(audio_data, self.preprocessor_config)
+        return self.generate(mel, decoding_config=decoding_config)[0]
+    
+    audio_length_seconds = len(audio_data) / self.preprocessor_config.sample_rate
+    if audio_length_seconds <= chunk_duration:
+        # Audio is shorter than chunk_duration, process without chunking
+        mel = get_logmel(audio_data, self.preprocessor_config)
+        return self.generate(mel, decoding_config=decoding_config)[0]
+    
+    # Process with chunking
+    chunk_samples = int(chunk_duration * self.preprocessor_config.sample_rate)
+    overlap_samples = int(overlap_duration * self.preprocessor_config.sample_rate)
+    
+    all_tokens = []
+    for start in range(0, len(audio_data), chunk_samples - overlap_samples):
+        end = min(start + chunk_samples, len(audio_data))
+        
+        # Process chunk
+        chunk_audio = audio_data[start:end]
+        chunk_mel = get_logmel(chunk_audio, self.preprocessor_config)
+        chunk_result = self.generate(chunk_mel, decoding_config=decoding_config)[0]
+        
+        # Adjust timestamps
+        chunk_offset = start / self.preprocessor_config.sample_rate
+        for sentence in chunk_result.sentences:
+            for token in sentence.tokens:
+                token.start += chunk_offset
+                token.end = token.start + token.duration
+        
+        # Merge with previous chunks
+        if all_tokens:
+            all_tokens = merge_longest_contiguous(
+                all_tokens, chunk_result.tokens, overlap_duration
+            )
+        else:
+            all_tokens = chunk_result.tokens
+    
+    return sentences_to_result(tokens_to_sentences(all_tokens, decoding_config.sentence))
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Python API" icon="code" href="/guides/python-api">
+    Learn more about the transcribe() method
+  </Card>
+  <Card title="Streaming" icon="tower-broadcast" href="/guides/streaming">
+    Real-time transcription alternative
+  </Card>
+  <Card title="Output Formats" icon="file-lines" href="/guides/output-formats">
+    Export transcriptions in different formats
+  </Card>
+  <Card title="Performance Tips" icon="gauge-high" href="/performance">
+    Optimize processing speed
+  </Card>
+</CardGroup>

@@ -1,0 +1,230 @@
+---
+title: Introduction to Parakeet MLX
+description: High-performance automatic speech recognition for Apple Silicon using Nvidia's Parakeet models
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/hero-light.svg"
+  alt="Parakeet MLX Hero Light"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/hero-dark.svg"
+  alt="Parakeet MLX Hero Dark"
+/>
+
+## What is Parakeet MLX?
+
+Parakeet MLX is a high-performance implementation of Nvidia's Parakeet Automatic Speech Recognition (ASR) models, optimized specifically for Apple Silicon using the MLX framework. It brings state-of-the-art speech recognition capabilities to Mac users with native hardware acceleration.
+
+<CardGroup cols={2}>
+  <Card
+    title="Quick Start"
+    icon="bolt"
+    href="/quickstart"
+  >
+    Get started with a working transcription in under 2 minutes
+  </Card>
+  <Card
+    title="Installation"
+    icon="download"
+    href="/installation"
+  >
+    Install Parakeet MLX with pip, uv, or as a CLI tool
+  </Card>
+  <Card
+    title="Python API"
+    icon="code"
+    href="/api/python-api"
+  >
+    Learn how to integrate Parakeet MLX into your Python applications
+  </Card>
+  <Card
+    title="CLI Reference"
+    icon="terminal"
+    href="/api/cli-reference"
+  >
+    Explore all command-line options and examples
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<AccordionGroup>
+  <Accordion title="Multiple Model Variants" icon="brain">
+    Parakeet MLX supports all major Parakeet model architectures:
+    
+    - **TDT (Token-and-Duration Transducer)**: Best accuracy with beam search support
+    - **RNNT (RNN-Transducer)**: Efficient streaming transcription
+    - **CTC (Connectionist Temporal Classification)**: Fast processing for real-time applications
+    - **TDT-CTC Hybrid**: Combines strengths of both approaches
+    
+    All models are available through the [mlx-community](https://huggingface.co/collections/mlx-community/parakeet) on Hugging Face.
+  </Accordion>
+
+  <Accordion title="Real-Time Streaming" icon="broadcast-tower">
+    Built-in support for streaming transcription allows you to process audio in real-time:
+    
+    ```python
+    with model.transcribe_stream(context_size=(256, 256)) as transcriber:
+        for chunk in audio_chunks:
+            transcriber.add_audio(chunk)
+            print(transcriber.result.text)
+    ```
+    
+    Perfect for live transcription, voice assistants, and real-time captioning.
+  </Accordion>
+
+  <Accordion title="Word-Level Timestamps" icon="clock">
+    Get precise timing information for every word:
+    
+    ```python
+    result = model.transcribe("audio.wav")
+    for sentence in result.sentences:
+        for token in sentence.tokens:
+            print(f"{token.text} [{token.start:.2f}s - {token.end:.2f}s]")
+    ```
+    
+    Ideal for subtitle generation, video editing, and accessibility tools.
+  </Accordion>
+
+  <Accordion title="Multiple Output Formats" icon="file-export">
+    Export transcriptions in various formats:
+    
+    - **TXT**: Plain text transcription
+    - **SRT**: SubRip subtitle format with timestamps
+    - **VTT**: WebVTT format for web video players
+    - **JSON**: Structured data with full timing and confidence scores
+    
+    Enable word-level highlighting in subtitles with the `--highlight-words` flag.
+  </Accordion>
+
+  <Accordion title="Optimized for Apple Silicon" icon="apple">
+    Native MLX integration provides:
+    
+    - Hardware-accelerated inference on M-series chips
+    - Efficient memory usage with bfloat16 precision
+    - Local attention mechanisms for long-form audio
+    - Chunking support for files of any length
+    
+    All processing happens locally on your device—no cloud API required.
+  </Accordion>
+
+  <Accordion title="Flexible API" icon="puzzle-piece">
+    Use Parakeet MLX your way:
+    
+    - **CLI**: Simple command-line interface for batch processing
+    - **Python API**: Full programmatic control for integration
+    - **Streaming API**: Real-time transcription with context management
+    - **Low-Level API**: Direct access to model internals for research
+  </Accordion>
+</AccordionGroup>
+
+## Why Parakeet MLX?
+
+<CardGroup cols={3}>
+  <Card title="Local Processing" icon="lock">
+    All transcription happens on your device. Your audio never leaves your machine.
+  </Card>
+  <Card title="No API Costs" icon="dollar-sign">
+    Free to use with no per-minute charges or usage limits.
+  </Card>
+  <Card title="Open Source" icon="code-branch">
+    Apache 2.0 licensed. Inspect, modify, and contribute to the code.
+  </Card>
+</CardGroup>
+
+## Supported Models
+
+Parakeet MLX works with any compatible model from the [mlx-community/parakeet](https://huggingface.co/collections/mlx-community/parakeet) collection:
+
+| Model | Size | Type | Best For |
+|-------|------|------|----------|
+| `parakeet-tdt-0.6b-v3` | 600M | TDT | General use, best accuracy |
+| `parakeet-tdt-1.1b` | 1.1B | TDT | High accuracy, larger context |
+| `parakeet-rnnt-0.6b` | 600M | RNNT | Streaming applications |
+| `parakeet-ctc-0.6b` | 600M | CTC | Fast real-time processing |
+
+<Note>
+The default model is `mlx-community/parakeet-tdt-0.6b-v3`, which provides an excellent balance of speed and accuracy for most use cases.
+</Note>
+
+## Quick Example
+
+Here's how simple it is to transcribe audio with Parakeet MLX:
+
+<CodeGroup>
+```bash CLI
+parakeet-mlx audio.mp3
+```
+
+```python Python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.mp3")
+print(result.text)
+```
+</CodeGroup>
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Content Creation" icon="video">
+    Generate accurate subtitles for videos, podcasts, and recorded lectures
+  </Card>
+  <Card title="Accessibility" icon="universal-access">
+    Create real-time captions for live events and video conferencing
+  </Card>
+  <Card title="Research" icon="microscope">
+    Transcribe interviews, focus groups, and recorded observations
+  </Card>
+  <Card title="Documentation" icon="book">
+    Convert voice memos and meetings into searchable text
+  </Card>
+</CardGroup>
+
+## System Requirements
+
+<Warning>
+Parakeet MLX requires an Apple Silicon Mac (M1, M2, M3, or later) running macOS 13.0 or newer.
+</Warning>
+
+- **Processor**: Apple Silicon (M1 or later)
+- **RAM**: 8GB minimum, 16GB recommended for larger models
+- **Python**: 3.10 or higher
+- **Additional**: `ffmpeg` for audio format conversion (CLI only)
+
+## Next Steps
+
+<Steps>
+  <Step title="Install Parakeet MLX">
+    Follow the [installation guide](/installation) to set up Parakeet MLX on your system.
+  </Step>
+  <Step title="Try the Quick Start">
+    Run your first transcription with the [quick start guide](/quickstart).
+  </Step>
+  <Step title="Explore the API">
+    Dive deeper into the [Python API](/guides/python-api) or [CLI reference](/guides/cli-usage).
+  </Step>
+</Steps>
+
+## Community and Support
+
+<CardGroup cols={2}>
+  <Card
+    title="GitHub Repository"
+    icon="github"
+    href="https://github.com/senstella/parakeet-mlx"
+  >
+    Star the repo, report issues, and contribute code
+  </Card>
+  <Card
+    title="Hugging Face Models"
+    icon="face-smile"
+    href="https://huggingface.co/collections/mlx-community/parakeet"
+  >
+    Browse available Parakeet models optimized for MLX
+  </Card>
+</CardGroup>

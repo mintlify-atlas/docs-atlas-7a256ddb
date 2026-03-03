@@ -1,0 +1,377 @@
+---
+title: Sentence Splitting
+description: Control how transcriptions are segmented into sentences
+---
+
+Sentence splitting controls how the continuous token stream from the ASR model is segmented into readable sentences. Parakeet MLX provides multiple strategies to split transcriptions based on punctuation, word count, silence gaps, and duration.
+
+## Default Behavior
+
+By default, sentences are split only at punctuation marks:
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+for sentence in result.sentences:
+    print(f"[{sentence.start:.2f}s - {sentence.end:.2f}s] {sentence.text}")
+
+# Output:
+# [0.00s - 3.45s] Hello, how are you today?
+# [3.45s - 8.92s] I'm doing well, thank you for asking.
+```
+
+## Splitting Strategies
+
+### Punctuation-Based (Default)
+
+Sentences are split at:
+- Period followed by space: `. `
+- Question mark: `?`
+- Exclamation mark: `!`
+- CJK punctuation: `。`, `？`, `！`
+
+**Implementation** (from `alignment.py:67-78`):
+
+```python
+is_punctuation = (
+    "!" in token.text
+    or "?" in token.text
+    or "。" in token.text
+    or "？" in token.text
+    or "！" in token.text
+    or (
+        "." in token.text
+        and (idx == len(tokens) - 1 or " " in tokens[idx + 1].text)
+    )
+)
+```
+
+### Word Limit
+
+Split sentences after a maximum number of words. Useful for subtitles and captions.
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_words=15  # Split after 15 words
+    )
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+```
+
+<Tip>
+For subtitles, use `max_words=10-15` to ensure lines fit on screen. For transcripts, larger values (20-30) create more natural sentence breaks.
+</Tip>
+
+**Implementation** (from `alignment.py:79-87`):
+
+```python
+is_word_limit = (
+    (config.max_words is not None)
+    and (idx != len(tokens) - 1)
+    and (
+        len([x for x in current_tokens if " " in x.text])
+        + (1 if " " in tokens[idx + 1].text else 0)
+        > config.max_words
+    )
+)
+```
+
+### Silence Gap
+
+Split sentences when silence between tokens exceeds a threshold. Detects natural pauses.
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        silence_gap=2.0  # Split after 2 seconds of silence
+    )
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+```
+
+| Threshold | Behavior | Use Case |
+|-----------|----------|----------|
+| 0.5s | Splits on brief pauses | Very short segments |
+| 1.0s | Splits on short pauses | Conversational speech |
+| 2.0s | Splits on medium pauses | **Recommended for natural breaks** |
+| 5.0s | Splits on long pauses | Presentations, lectures |
+
+**Implementation** (from `alignment.py:88-92`):
+
+```python
+is_long_silence = (
+    (config.silence_gap is not None)
+    and (idx != len(tokens) - 1)
+    and (tokens[idx + 1].start - token.end >= config.silence_gap)
+)
+```
+
+### Duration Limit
+
+Split sentences when they exceed a maximum duration. Prevents overly long segments.
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_duration=30.0  # Split after 30 seconds
+    )
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+```
+
+**Implementation** (from `alignment.py:93-95`):
+
+```python
+is_over_duration = (config.max_duration is not None) and (
+    token.end - current_tokens[0].start >= config.max_duration
+)
+```
+
+## Combining Strategies
+
+All strategies can be used together. A sentence splits when **any** condition is met:
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_words=30,        # Split after 30 words
+        silence_gap=5.0,     # OR 5 seconds of silence
+        max_duration=40.0,   # OR 40 seconds duration
+    )
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+
+for sentence in result.sentences:
+    word_count = len([t for t in sentence.tokens if " " in t.text])
+    print(f"[{sentence.duration:.1f}s, {word_count} words] {sentence.text}")
+```
+
+## Use Case Examples
+
+### Subtitles (SRT/VTT)
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Short lines that fit on screen
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_words=12,
+        max_duration=5.0,
+    )
+)
+
+result = model.transcribe("video.mp4", decoding_config=config)
+
+# Generate SRT format
+for i, sentence in enumerate(result.sentences, 1):
+    start = sentence.start
+    end = sentence.end
+    print(f"{i}")
+    print(f"{format_timestamp(start)} --> {format_timestamp(end)}")
+    print(sentence.text)
+    print()
+```
+
+### Meeting Transcripts
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Natural speaker turns and pauses
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        silence_gap=2.0,    # Split on speaker pauses
+        max_duration=45.0,  # Prevent run-on segments
+    )
+)
+
+result = model.transcribe("meeting.wav", decoding_config=config)
+```
+
+### Lecture Notes
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Longer segments for context
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_words=50,
+        silence_gap=5.0,
+        max_duration=60.0,
+    )
+)
+
+result = model.transcribe("lecture.mp3", decoding_config=config)
+```
+
+### Social Media Clips
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Very short, punchy segments
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_words=8,
+        max_duration=3.0,
+    )
+)
+
+result = model.transcribe("short_video.mp4", decoding_config=config)
+```
+
+## CLI Usage
+
+```bash
+# Split by word count
+parakeet-mlx audio.wav --max-words 20
+
+# Split by silence
+parakeet-mlx audio.wav --silence-gap 3.0
+
+# Split by duration
+parakeet-mlx audio.wav --max-duration 45.0
+
+# Combine multiple strategies
+parakeet-mlx audio.wav \
+  --max-words 30 \
+  --silence-gap 5.0 \
+  --max-duration 40.0
+
+# Environment variables
+export PARAKEET_MAX_WORDS=30
+export PARAKEET_SILENCE_GAP=5.0
+export PARAKEET_MAX_DURATION=40.0
+parakeet-mlx audio.wav
+```
+
+## Sentence Confidence Scores
+
+Each sentence includes a confidence score computed as the geometric mean of token confidences:
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+for sentence in result.sentences:
+    print(f"Confidence: {sentence.confidence:.2%}")
+    print(f"Text: {sentence.text}")
+    print()
+```
+
+**Implementation** (from `alignment.py:33-35`):
+
+```python
+# Compute geometric mean of token confidences
+confidences = np.array([t.confidence for t in self.tokens])
+self.confidence = float(np.exp(np.mean(np.log(confidences + 1e-10))))
+```
+
+## Data Structures
+
+### SentenceConfig
+
+```python
+from parakeet_mlx import SentenceConfig
+
+config = SentenceConfig(
+    max_words=None,      # Maximum words per sentence
+    silence_gap=None,    # Silence threshold in seconds
+    max_duration=None,   # Maximum duration in seconds
+)
+```
+
+### AlignedSentence
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+for sentence in result.sentences:
+    print(f"Text: {sentence.text}")
+    print(f"Start: {sentence.start}s")
+    print(f"End: {sentence.end}s")
+    print(f"Duration: {sentence.duration}s")
+    print(f"Confidence: {sentence.confidence:.2%}")
+    print(f"Tokens: {len(sentence.tokens)}")
+    print()
+```
+
+## Token Access
+
+Access individual tokens within each sentence:
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+for sentence in result.sentences:
+    print(f"Sentence: {sentence.text}")
+    
+    for token in sentence.tokens:
+        print(f"  [{token.start:.2f}s-{token.end:.2f}s] {token.text}")
+        print(f"    Confidence: {token.confidence:.2%}")
+    print()
+```
+
+## Best Practices
+
+1. **Subtitles**: Use `max_words=10-15` and `max_duration=5.0` for readability
+2. **Transcripts**: Use `silence_gap=2.0-5.0` for natural breaks
+3. **Live Captions**: Use `max_duration=3.0-5.0` for frequent updates
+4. **Archives**: Use default punctuation-only for natural reading
+5. **Testing**: Experiment with different values on sample audio
+
+<Info>
+Sentence splitting happens **after** decoding. The same tokenized output can be re-segmented with different `SentenceConfig` settings without re-running the model.
+</Info>
+
+## Performance Impact
+
+Sentence splitting has **negligible performance impact** as it operates on the already-decoded token sequence. It's a post-processing step that doesn't affect model inference time.
+
+## Related
+
+- [Beam Decoding](/advanced/beam-decoding) - Improve transcription quality
+- [Local Attention](/advanced/local-attention) - Optimize memory usage
+- [Low-Level API](/advanced/low-level-api) - Direct token access

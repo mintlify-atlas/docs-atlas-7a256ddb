@@ -1,0 +1,247 @@
+---
+title: 'AlignedSentence'
+description: 'Sentence-level transcription with timing and tokens'
+icon: 'quote-left'
+---
+
+`AlignedSentence` is a dataclass that represents a single sentence in the transcription, with timing information and constituent tokens.
+
+## Class Definition
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Access sentences from the result
+for sentence in result.sentences:
+    print(sentence.text)
+    print(f"Time: {sentence.start:.2f}s - {sentence.end:.2f}s")
+```
+
+## Fields
+
+<ResponseField name="text" type="str">
+  The text content of the sentence. This is constructed by concatenating all token texts.
+  
+  **Example:** `"Hello, how are you?"`
+</ResponseField>
+
+<ResponseField name="tokens" type="list[AlignedToken]">
+  List of [AlignedToken](/api/aligned-token) objects that make up this sentence. Tokens are automatically sorted by start time.
+  
+  Each token includes:
+  - `id`: Token ID in the vocabulary
+  - `text`: Token text
+  - `start`: Start time in seconds
+  - `end`: End time in seconds
+  - `duration`: Duration in seconds
+  - `confidence`: Confidence score (0.0 to 1.0)
+</ResponseField>
+
+<ResponseField name="start" type="float" default="0.0">
+  Start time of the sentence in seconds. Automatically computed as the start time of the first token.
+  
+  **Example:** `1.23`
+</ResponseField>
+
+<ResponseField name="end" type="float" default="0.0">
+  End time of the sentence in seconds. Automatically computed as the end time of the last token.
+  
+  **Example:** `4.56`
+</ResponseField>
+
+<ResponseField name="duration" type="float" default="0.0">
+  Duration of the sentence in seconds. Automatically computed as `end - start`.
+  
+  **Example:** `3.33`
+</ResponseField>
+
+<ResponseField name="confidence" type="float" default="1.0">
+  Aggregate confidence score for the sentence (0.0 to 1.0). Computed as the geometric mean of all token confidence scores.
+  
+  Formula: `exp(mean(log(token_confidences)))`
+  
+  **Example:** `0.87`
+</ResponseField>
+
+---
+
+## Automatic Computation
+
+When an `AlignedSentence` is created, the following fields are automatically computed in `__post_init__`:
+
+1. **tokens**: Sorted by start time
+2. **start**: Set to first token's start time
+3. **end**: Set to last token's end time
+4. **duration**: Computed as `end - start`
+5. **confidence**: Computed as geometric mean of token confidences
+
+You should not manually set these values; they are derived from the tokens.
+
+---
+
+## Examples
+
+### Basic Usage
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+for sentence in result.sentences:
+    print(f"Text: {sentence.text}")
+    print(f"Time: {sentence.start:.2f}s - {sentence.end:.2f}s")
+    print(f"Duration: {sentence.duration:.2f}s")
+    print(f"Confidence: {sentence.confidence:.2%}")
+    print(f"Tokens: {len(sentence.tokens)}")
+    print()
+```
+
+### Analyzing Token-Level Details
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+for i, sentence in enumerate(result.sentences, 1):
+    print(f"\nSentence {i}: {sentence.text}")
+    print(f"  Overall confidence: {sentence.confidence:.2%}")
+    print(f"  Token breakdown:")
+    
+    for token in sentence.tokens:
+        print(f"    {token.start:.2f}s: '{token.text}' (conf: {token.confidence:.2%})")
+```
+
+### Filter by Confidence
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Find sentences with low confidence
+low_confidence_threshold = 0.7
+
+print("Low confidence sentences:")
+for sentence in result.sentences:
+    if sentence.confidence < low_confidence_threshold:
+        print(f"  [{sentence.start:.2f}s] Confidence: {sentence.confidence:.2%}")
+        print(f"  Text: {sentence.text}")
+        print()
+```
+
+### Generate Time-Stamped Transcript
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(silence_gap=3.0)
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+
+print("=== Time-Stamped Transcript ===")
+for sentence in result.sentences:
+    timestamp = f"[{sentence.start:.1f}s - {sentence.end:.1f}s]"
+    print(f"{timestamp:20} {sentence.text}")
+```
+
+### Word Highlighting for Subtitles
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(max_words=15, max_duration=5.0)
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+
+print("=== VTT with Word Highlighting ===")
+for i, sentence in enumerate(result.sentences, 1):
+    print(f"{i}")
+    print(f"{format_vtt_time(sentence.start)} --> {format_vtt_time(sentence.end)}")
+    
+    # Add word-level timestamps
+    for token in sentence.tokens:
+        print(f"<{format_vtt_time(token.start)}><c>{token.text}</c>", end="")
+    print("\n")
+
+def format_vtt_time(seconds):
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
+```
+
+### Search Within Time Range
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+def search_in_timerange(sentences, start_time, end_time, query):
+    """Search for text within a specific time range"""
+    results = []
+    for sentence in sentences:
+        # Check if sentence overlaps with time range
+        if sentence.start <= end_time and sentence.end >= start_time:
+            if query.lower() in sentence.text.lower():
+                results.append(sentence)
+    return results
+
+# Search for "machine learning" between 1:00 and 2:00
+matches = search_in_timerange(result.sentences, 60.0, 120.0, "machine learning")
+
+for sentence in matches:
+    print(f"Found at {sentence.start:.1f}s: {sentence.text}")
+```
+
+### Calculate Speaking Statistics
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+result = model.transcribe("audio.wav")
+
+# Calculate statistics
+total_duration = sum(s.duration for s in result.sentences)
+avg_duration = total_duration / len(result.sentences)
+avg_confidence = sum(s.confidence for s in result.sentences) / len(result.sentences)
+
+# Count words
+total_words = sum(
+    len([t for t in s.tokens if " " in t.text])
+    for s in result.sentences
+)
+
+print(f"Total sentences: {len(result.sentences)}")
+print(f"Total speaking time: {total_duration:.2f}s")
+print(f"Average sentence duration: {avg_duration:.2f}s")
+print(f"Average confidence: {avg_confidence:.2%}")
+print(f"Total words: {total_words}")
+print(f"Words per minute: {(total_words / total_duration * 60):.1f}")
+```
+
+---
+
+## Related
+
+- [AlignedResult](/api/aligned-result) - Parent result containing all sentences
+- [AlignedToken](/api/aligned-token) - Token objects within sentences
+- [SentenceConfig](/api/sentence-config) - Configure sentence splitting behavior

@@ -1,0 +1,546 @@
+---
+title: Python API
+description: Complete guide to using Parakeet MLX in your Python applications
+icon: code
+---
+
+The Parakeet MLX Python API provides a clean, powerful interface for integrating speech recognition into your applications.
+
+## Installation
+
+Install the package using your preferred package manager:
+
+<CodeGroup>
+
+```bash Using uv (recommended)
+uv add parakeet-mlx -U
+```
+
+```bash Using pip
+pip install parakeet-mlx -U
+```
+
+</CodeGroup>
+
+## Quick Start
+
+<Steps>
+
+<Step title="Import the library">
+  ```python
+  from parakeet_mlx import from_pretrained
+  ```
+</Step>
+
+<Step title="Load a model">
+  ```python
+  model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+  ```
+</Step>
+
+<Step title="Transcribe audio">
+  ```python
+  result = model.transcribe("audio_file.wav")
+  print(result.text)
+  ```
+</Step>
+
+</Steps>
+
+## Loading Models
+
+### from_pretrained()
+
+The `from_pretrained()` function downloads and loads a model from Hugging Face:
+
+```python
+from parakeet_mlx import from_pretrained
+import mlx.core as mx
+
+# Load with default settings
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Load with BFloat16 precision (default)
+model = from_pretrained(
+    "mlx-community/parakeet-tdt-0.6b-v3",
+    dtype=mx.bfloat16
+)
+
+# Load with Float32 precision
+model = from_pretrained(
+    "mlx-community/parakeet-tdt-0.6b-v3",
+    dtype=mx.float32
+)
+
+# Custom cache directory
+model = from_pretrained(
+    "mlx-community/parakeet-tdt-0.6b-v3",
+    cache_dir="/path/to/cache"
+)
+```
+
+<Note>
+  Models are cached in HuggingFace's default cache directory (`~/.cache/huggingface`) or the location specified by `HF_HOME`/`HF_HUB_CACHE` environment variables.
+</Note>
+
+### Available Models
+
+Browse all available models in the [mlx-community/parakeet collection](https://huggingface.co/collections/mlx-community/parakeet).
+
+Popular models:
+- `mlx-community/parakeet-tdt-0.6b-v3` - Fast, accurate TDT model (recommended)
+- `mlx-community/parakeet-tdt-1.1b` - Larger TDT model
+- `mlx-community/parakeet-ctc-0.6b` - CTC-based model
+- `mlx-community/parakeet-rnnt-0.6b` - RNN-T based model
+
+### Model Types
+
+The `from_pretrained()` function returns one of these model types:
+
+```python
+from parakeet_mlx import (
+    BaseParakeet,      # Abstract base class
+    ParakeetTDT,       # Token-Duration-Transducer model
+    ParakeetRNNT,      # RNN-Transducer model
+    ParakeetCTC,       # CTC model
+    ParakeetTDTCTC,    # TDT with auxiliary CTC
+)
+```
+
+For most use cases, the `BaseParakeet` abstraction is sufficient:
+
+```python
+from parakeet_mlx import from_pretrained, BaseParakeet
+
+model: BaseParakeet = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+```
+
+## Basic Transcription
+
+### Simple Transcription
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Transcribe a file
+result = model.transcribe("audio.wav")
+print(result.text)
+# Output: "Hello world. This is a test."
+```
+
+### Working with Timestamps
+
+The `transcribe()` method returns an `AlignedResult` object with detailed timing information:
+
+```python
+result = model.transcribe("audio.wav")
+
+# Full text
+print(result.text)
+
+# Sentence-level timestamps
+for sentence in result.sentences:
+    print(f"[{sentence.start:.2f}s - {sentence.end:.2f}s] {sentence.text}")
+    print(f"  Duration: {sentence.duration:.2f}s")
+    print(f"  Confidence: {sentence.confidence:.2%}")
+
+# Word-level timestamps
+for sentence in result.sentences:
+    for token in sentence.tokens:
+        print(f"{token.text} [{token.start:.2f}s - {token.end:.2f}s]")
+```
+
+Output:
+```
+[0.20s - 2.15s] Hello world.
+  Duration: 1.95s
+  Confidence: 94.32%
+[2.15s - 4.80s] This is a test.
+  Duration: 2.65s
+  Confidence: 96.18%
+```
+
+## Result Objects
+
+### AlignedResult
+
+```python
+from parakeet_mlx import AlignedResult
+
+result: AlignedResult = model.transcribe("audio.wav")
+
+# Full transcribed text
+print(result.text)  # str
+
+# List of sentences with timestamps
+print(result.sentences)  # list[AlignedSentence]
+
+# All tokens (flattened from all sentences)
+print(result.tokens)  # list[AlignedToken]
+```
+
+### AlignedSentence
+
+```python
+from parakeet_mlx import AlignedSentence
+
+sentence: AlignedSentence = result.sentences[0]
+
+print(sentence.text)        # str - Sentence text
+print(sentence.start)       # float - Start time in seconds
+print(sentence.end)         # float - End time in seconds
+print(sentence.duration)    # float - Duration in seconds
+print(sentence.confidence)  # float - Confidence score (0-1)
+print(sentence.tokens)      # list[AlignedToken] - Words in sentence
+```
+
+### AlignedToken
+
+```python
+from parakeet_mlx import AlignedToken
+
+token: AlignedToken = sentence.tokens[0]
+
+print(token.text)        # str - Token text
+print(token.start)       # float - Start time in seconds
+print(token.end)         # float - End time in seconds
+print(token.duration)    # float - Duration in seconds
+print(token.confidence)  # float - Confidence score (0-1)
+print(token.id)         # int - Token ID in vocabulary
+```
+
+## Decoding Configuration
+
+### Greedy Decoding (Default)
+
+Greedy decoding selects the most probable token at each step:
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, Greedy
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(decoding=Greedy())
+result = model.transcribe("audio.wav", decoding_config=config)
+```
+
+### Beam Search Decoding
+
+Beam search explores multiple hypotheses for better accuracy:
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, Beam
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    decoding=Beam(
+        beam_size=5,          # Number of beams (default: 5)
+        length_penalty=0.013,  # Length penalty (default: 0.013)
+        patience=3.5,          # Patience multiplier (default: 3.5)
+        duration_reward=0.67,  # TDT: balance token/duration probs (default: 0.67)
+    )
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+```
+
+<Warning>
+  Beam decoding is currently only supported for TDT models and is significantly slower than greedy decoding.
+</Warning>
+
+### Sentence Configuration
+
+Control how transcriptions are split into sentences:
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_words=30,        # Maximum words per sentence
+        silence_gap=5.0,     # Split at silences > 5 seconds
+        max_duration=40.0,   # Maximum sentence duration in seconds
+    )
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+```
+
+### Combined Configuration
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, Beam, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    decoding=Beam(beam_size=10, length_penalty=0.02),
+    sentence=SentenceConfig(max_words=20, max_duration=30.0)
+)
+
+result = model.transcribe("audio.wav", decoding_config=config)
+```
+
+## Chunking for Long Audio
+
+For long audio files, use chunking to process the audio in smaller segments:
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+result = model.transcribe(
+    "long_audio.wav",
+    chunk_duration=120.0,     # 2 minutes per chunk
+    overlap_duration=15.0,    # 15 seconds overlap
+)
+
+print(result.text)
+```
+
+### Progress Callback
+
+Track chunking progress with a callback:
+
+```python
+def progress_callback(current, total):
+    progress = (current / total) * 100
+    print(f"Progress: {progress:.1f}%", end="\r")
+
+result = model.transcribe(
+    "long_audio.wav",
+    chunk_duration=120.0,
+    overlap_duration=15.0,
+    chunk_callback=progress_callback
+)
+```
+
+See the [Chunking Guide](/guides/chunking) for detailed information.
+
+## Attention Mechanisms
+
+### Local Attention
+
+Reduce memory usage for long audio by using local attention:
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Enable local attention with context window
+model.encoder.set_attention_model(
+    "rel_pos_local_attn",  # Follows NeMo's naming convention
+    (256, 256),            # (left_context, right_context) in frames
+)
+
+result = model.transcribe("long_audio.wav")
+```
+
+<Note>
+  Local attention is most effective when processing long audio without chunking.
+</Note>
+
+## Low-Level API
+
+### Direct Mel-Spectrogram Processing
+
+For advanced use cases, you can process mel-spectrograms directly:
+
+```python
+import mlx.core as mx
+from parakeet_mlx import from_pretrained
+from parakeet_mlx.audio import load_audio, get_logmel
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Load and preprocess audio manually
+audio = load_audio("audio.wav", model.preprocessor_config.sample_rate)
+mel = get_logmel(audio, model.preprocessor_config)
+
+# Generate transcription from mel-spectrogram
+# Input shape: [batch, sequence, features] or [sequence, features]
+results = model.generate(mel)  # Returns list[AlignedResult]
+
+print(results[0].text)
+```
+
+### Batch Processing
+
+```python
+import mlx.core as mx
+from parakeet_mlx import from_pretrained
+from parakeet_mlx.audio import load_audio, get_logmel
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Load multiple audio files
+audio_files = ["audio1.wav", "audio2.wav", "audio3.wav"]
+mel_specs = []
+
+for file in audio_files:
+    audio = load_audio(file, model.preprocessor_config.sample_rate)
+    mel = get_logmel(audio, model.preprocessor_config)
+    mel_specs.append(mel)
+
+# Stack into batch (requires same length or padding)
+batch_mel = mx.concatenate([mx.expand_dims(m, 0) for m in mel_specs], axis=0)
+
+# Generate for batch
+results = model.generate(batch_mel)
+
+for i, result in enumerate(results):
+    print(f"File {i+1}: {result.text}")
+```
+
+## Precision Control
+
+```python
+import mlx.core as mx
+from parakeet_mlx import from_pretrained
+
+# Load model in BFloat16 (default, recommended)
+model = from_pretrained(
+    "mlx-community/parakeet-tdt-0.6b-v3",
+    dtype=mx.bfloat16
+)
+
+# Transcribe in BFloat16
+result = model.transcribe("audio.wav", dtype=mx.bfloat16)
+
+# Or use Float32 for potentially higher accuracy
+model = from_pretrained(
+    "mlx-community/parakeet-tdt-0.6b-v3",
+    dtype=mx.float32
+)
+result = model.transcribe("audio.wav", dtype=mx.float32)
+```
+
+<Tip>
+  BFloat16 is recommended as it provides a good balance between speed, memory usage, and accuracy.
+</Tip>
+
+## Complete Example
+
+Here's a comprehensive example demonstrating common API patterns:
+
+```python
+import mlx.core as mx
+from parakeet_mlx import (
+    from_pretrained,
+    DecodingConfig,
+    Beam,
+    SentenceConfig,
+)
+
+# Load model
+model = from_pretrained(
+    "mlx-community/parakeet-tdt-0.6b-v3",
+    dtype=mx.bfloat16
+)
+
+# Configure decoding
+config = DecodingConfig(
+    decoding=Beam(
+        beam_size=5,
+        length_penalty=0.013,
+        patience=3.5,
+        duration_reward=0.67,
+    ),
+    sentence=SentenceConfig(
+        max_words=25,
+        silence_gap=3.0,
+        max_duration=30.0,
+    ),
+)
+
+# Transcribe with progress tracking
+def show_progress(current, total):
+    print(f"Processing: {current}/{total} samples", end="\r")
+
+result = model.transcribe(
+    "audio.wav",
+    dtype=mx.bfloat16,
+    decoding_config=config,
+    chunk_duration=120.0,
+    overlap_duration=15.0,
+    chunk_callback=show_progress,
+)
+
+# Display results
+print(f"\n\nFull text: {result.text}\n")
+
+for i, sentence in enumerate(result.sentences, 1):
+    print(f"Sentence {i}:")
+    print(f"  Time: {sentence.start:.2f}s - {sentence.end:.2f}s")
+    print(f"  Text: {sentence.text}")
+    print(f"  Confidence: {sentence.confidence:.2%}")
+    print()
+
+# Export word-level timestamps
+for sentence in result.sentences:
+    for token in sentence.tokens:
+        print(
+            f"{token.start:.3f}\t{token.end:.3f}\t"
+            f"{token.text}\t{token.confidence:.3f}"
+        )
+```
+
+## Type Hints
+
+For better IDE support and type checking:
+
+```python
+from typing import List, Optional
+from pathlib import Path
+import mlx.core as mx
+from parakeet_mlx import (
+    BaseParakeet,
+    ParakeetTDT,
+    AlignedResult,
+    AlignedSentence,
+    AlignedToken,
+    DecodingConfig,
+    from_pretrained,
+)
+
+def transcribe_file(audio_path: Path) -> AlignedResult:
+    model: BaseParakeet = from_pretrained(
+        "mlx-community/parakeet-tdt-0.6b-v3"
+    )
+    result: AlignedResult = model.transcribe(str(audio_path))
+    return result
+
+def extract_sentences(result: AlignedResult) -> List[str]:
+    sentences: List[AlignedSentence] = result.sentences
+    return [s.text for s in sentences]
+
+def extract_timestamps(result: AlignedResult) -> List[tuple[float, float, str]]:
+    return [
+        (sentence.start, sentence.end, sentence.text)
+        for sentence in result.sentences
+    ]
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Streaming" icon="tower-broadcast" href="/guides/streaming">
+    Learn how to do real-time transcription
+  </Card>
+  <Card title="Chunking" icon="scissors" href="/guides/chunking">
+    Process long audio files efficiently
+  </Card>
+  <Card title="Output Formats" icon="file-lines" href="/guides/output-formats">
+    Export transcriptions in different formats
+  </Card>
+  <Card title="CLI Usage" icon="terminal" href="/guides/cli-usage">
+    Use the command-line interface
+  </Card>
+</CardGroup>

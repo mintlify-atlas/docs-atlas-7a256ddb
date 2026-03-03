@@ -1,80 +1,332 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with Parakeet MLX in under 2 minutes
 ---
 
-## Get started in three steps
+Let's transcribe an audio file in just a few steps. This guide assumes you've already [installed Parakeet MLX](/installation).
 
-Get your documentation site running locally and make your first customization.
+## Quick Start
 
-### Step 1: Set up your local environment
+<Tabs>
+  <Tab title="CLI">
+    Transcribe an audio file with a single command:
+
+    ```bash
+    parakeet-mlx audio.mp3
+    ```
+
+    This creates `audio.srt` in the current directory with timestamped transcription.
+
+    <Info>
+    By default, the CLI uses the `mlx-community/parakeet-tdt-0.6b-v3` model and generates SRT subtitle format.
+    </Info>
+  </Tab>
+
+  <Tab title="Python">
+    Transcribe programmatically with just a few lines:
+
+    ```python
+    from parakeet_mlx import from_pretrained
+
+    # Load the model
+    model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+    # Transcribe
+    result = model.transcribe("audio.mp3")
+
+    # Print the transcription
+    print(result.text)
+    ```
+
+    <Info>
+    The first run downloads the model (~600MB) and caches it locally. Subsequent runs are much faster.
+    </Info>
+  </Tab>
+</Tabs>
+
+## Common Use Cases
+
+### Batch Processing Multiple Files
+
+<CodeGroup>
+```bash CLI
+parakeet-mlx *.mp3 --output-format vtt
+```
+
+```python Python
+from parakeet_mlx import from_pretrained
+from pathlib import Path
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+for audio_file in Path(".").glob("*.mp3"):
+    result = model.transcribe(audio_file)
+    
+    # Save to text file
+    output_path = audio_file.with_suffix(".txt")
+    output_path.write_text(result.text)
+    
+    print(f"Transcribed: {audio_file.name}")
+```
+</CodeGroup>
+
+### Long Audio with Chunking
+
+For audio longer than a few minutes, enable chunking to manage memory:
+
+<CodeGroup>
+```bash CLI
+parakeet-mlx long_podcast.mp3 --chunk-duration 120 --overlap-duration 15
+```
+
+```python Python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+result = model.transcribe(
+    "long_podcast.mp3",
+    chunk_duration=120.0,      # 2-minute chunks
+    overlap_duration=15.0      # 15-second overlap
+)
+
+print(result.text)
+```
+</CodeGroup>
+
+<Tip>
+The default chunk duration is 120 seconds with 15 seconds of overlap. This works well for most speech content.
+</Tip>
+
+### Real-Time Streaming
+
+For live audio transcription:
+
+```python
+from parakeet_mlx import from_pretrained
+from parakeet_mlx.audio import load_audio
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Create streaming context
+with model.transcribe_stream(context_size=(256, 256)) as transcriber:
+    # Simulate real-time audio chunks
+    audio_data = load_audio("audio.mp3", model.preprocessor_config.sample_rate)
+    chunk_size = model.preprocessor_config.sample_rate  # 1 second chunks
+    
+    for i in range(0, len(audio_data), chunk_size):
+        chunk = audio_data[i:i+chunk_size]
+        transcriber.add_audio(chunk)
+        
+        # Get current transcription
+        print(f"Current: {transcriber.result.text}")
+```
+
+### Beam Search for Higher Accuracy
+
+Trade speed for accuracy with beam search:
+
+<CodeGroup>
+```bash CLI
+parakeet-mlx audio.mp3 --decoding beam --beam-size 5
+```
+
+```python Python
+from parakeet_mlx import from_pretrained, DecodingConfig, Beam
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    decoding=Beam(
+        beam_size=5,
+        length_penalty=0.013,
+        patience=3.5,
+        duration_reward=0.67
+    )
+)
+
+result = model.transcribe("audio.mp3", decoding_config=config)
+print(result.text)
+```
+</CodeGroup>
+
+### Custom Sentence Splitting
+
+Control how text is split into sentences for subtitles:
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig, SentenceConfig
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+config = DecodingConfig(
+    sentence=SentenceConfig(
+        max_words=30,          # Max 30 words per subtitle
+        silence_gap=5.0,       # Split on 5+ second silence
+        max_duration=40.0      # Max 40 second duration
+    )
+)
+
+result = model.transcribe("audio.mp3", decoding_config=config)
+
+# Each sentence now follows these constraints
+for sentence in result.sentences:
+    print(f"[{sentence.start:.2f}s - {sentence.end:.2f}s] {sentence.text}")
+```
+
+## Performance Tips
 
 <AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+  <Accordion title="Use bfloat16 precision (default)" icon="zap">
+    BFloat16 is 2x faster than FP32 with minimal accuracy loss on Apple Silicon:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
+    ```python
+    from mlx.core import bfloat16
+    
+    model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3", dtype=bfloat16)
+    ```
   </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+
+  <Accordion title="Use local attention for long audio" icon="memory">
+    Reduce memory usage for very long audio files:
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
+    ```python
+    model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+    model.encoder.set_attention_model("rel_pos_local_attn", (256, 256))
+    
+    result = model.transcribe("very_long_audio.mp3")
+    ```
+  </Accordion>
+
+  <Accordion title="Choose the right model" icon="circle-nodes">
+    - **TDT models**: Best accuracy, beam search support (recommended)
+    - **RNNT models**: Good balance of speed and accuracy
+    - **CTC models**: Fastest, simpler architecture
+  </Accordion>
+
+  <Accordion title="Reuse model instances" icon="recycle">
+    Load the model once and reuse it for multiple transcriptions:
+    
+    ```python
+    model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+    
+    for audio_file in audio_files:
+        result = model.transcribe(audio_file)
+        # Process result...
+    ```
   </Accordion>
 </AccordionGroup>
 
-### Step 2: Deploy your changes
+## Advanced Examples
+
+### Low-Level API with Mel Spectrograms
+
+For custom preprocessing pipelines:
+
+```python
+from parakeet_mlx import from_pretrained, DecodingConfig
+from parakeet_mlx.audio import load_audio, get_logmel
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Load and preprocess audio manually
+audio = load_audio("audio.mp3", model.preprocessor_config.sample_rate)
+mel = get_logmel(audio, model.preprocessor_config)
+
+# Generate transcription
+alignments = model.generate(mel, decoding_config=DecodingConfig())
+
+# alignments is a list of AlignedResult
+for result in alignments:
+    print(result.text)
+```
+
+### Streaming with Custom Context Size
+
+Fine-tune streaming performance:
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+with model.transcribe_stream(
+    context_size=(512, 512),  # Larger context = better accuracy, more memory
+    depth=2                   # More layers preserve computation accuracy
+) as transcriber:
+    # Process audio chunks...
+    pass
+```
+
+## Troubleshooting
 
 <AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+  <Accordion title="Command not found: parakeet-mlx" icon="terminal">
+    If installed with uv tool, ensure uv's bin directory is in your PATH:
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```bash
+    export PATH="$HOME/.local/bin:$PATH"
+    ```
+    
+    Or reinstall with pip:
+    ```bash
+    pip install parakeet-mlx -U
+    ```
+  </Accordion>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Accordion title="Import error: No module named 'parakeet_mlx'" icon="python">
+    Verify installation in your active Python environment:
+    
+    ```bash
+    pip show parakeet-mlx
+    python -c "import parakeet_mlx; print(parakeet_mlx.__file__)"
+    ```
+  </Accordion>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
+  <Accordion title="FFmpeg not found" icon="film">
+    Install FFmpeg for audio file support:
+    
+    ```bash
+    # macOS
+    brew install ffmpeg
+    
+    # Linux
+    sudo apt install ffmpeg
+    ```
+  </Accordion>
+
+  <Accordion title="Out of memory errors" icon="memory">
+    Try these solutions:
+    1. Enable chunking: `--chunk-duration 120`
+    2. Use local attention: `--local-attention`
+    3. Close other applications to free up RAM
+    4. Choose a smaller model variant
+  </Accordion>
+
+  <Accordion title="First run is very slow" icon="hourglass">
+    The first transcription downloads the model (~600MB) from Hugging Face and caches it locally. Subsequent runs will be much faster.
+    
+    You can pre-download models:
+    ```python
+    from parakeet_mlx import from_pretrained
+    model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+    ```
   </Accordion>
 </AccordionGroup>
 
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+## Next Steps
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Python API Guide" icon="code" href="/guides/python-api">
+    Learn about advanced Python API features
+  </Card>
+  <Card title="CLI Usage" icon="terminal" href="/guides/cli-usage">
+    Explore all CLI options and workflows
+  </Card>
+  <Card title="Streaming" icon="signal-stream" href="/guides/streaming">
+    Set up real-time audio transcription
+  </Card>
+  <Card title="Output Formats" icon="file-export" href="/guides/output-formats">
+    Learn about SRT, VTT, JSON, and custom formats
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

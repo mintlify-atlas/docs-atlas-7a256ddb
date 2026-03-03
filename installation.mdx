@@ -1,0 +1,418 @@
+---
+title: Installation
+description: Install Parakeet MLX using pip, uv, or as a standalone CLI tool
+---
+
+## Prerequisites
+
+Before installing Parakeet MLX, ensure your system meets these requirements:
+
+<AccordionGroup>
+  <Accordion title="System Requirements" icon="laptop">
+    - **Processor**: Apple Silicon (M1, M2, M3, or later)
+    - **Operating System**: macOS 13.0 or newer
+    - **RAM**: 8GB minimum, 16GB recommended for larger models
+    - **Storage**: At least 2GB free space for models and cache
+  </Accordion>
+
+  <Accordion title="Python Requirements" icon="python">
+    - **Python Version**: 3.10 or higher
+    
+    Check your Python version:
+    ```bash
+    python3 --version
+    ```
+    
+    If you need to install or upgrade Python, we recommend using [Homebrew](https://brew.sh):
+    ```bash
+    brew install python@3.11
+    ```
+  </Accordion>
+
+  <Accordion title="FFmpeg (CLI Only)" icon="waveform">
+    The CLI requires `ffmpeg` for audio format conversion. Install it with Homebrew:
+    
+    ```bash
+    brew install ffmpeg
+    ```
+    
+    Verify the installation:
+    ```bash
+    ffmpeg -version
+    ```
+    
+    <Note>
+    FFmpeg is only required for the CLI tool. If you're using Parakeet MLX as a Python library, you can skip this step.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+## Installation Methods
+
+<Tabs>
+  <Tab title="uv (Recommended)">
+    ### Using uv
+
+    [uv](https://docs.astral.sh/uv/) is a fast Python package installer and resolver. It's the recommended way to install Parakeet MLX.
+
+    <Steps>
+      <Step title="Install uv">
+        If you don't have uv installed, get it with:
+        
+        ```bash
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        ```
+      </Step>
+
+      <Step title="Add to Python Project">
+        To use Parakeet MLX in your Python project:
+        
+        ```bash
+        uv add parakeet-mlx -U
+        ```
+        
+        This adds `parakeet-mlx` to your project dependencies and installs it.
+      </Step>
+
+      <Step title="Install CLI Tool">
+        To install the `parakeet-mlx` command-line tool globally:
+        
+        ```bash
+        uv tool install parakeet-mlx -U
+        ```
+        
+        The `-U` flag ensures you get the latest version.
+      </Step>
+
+      <Step title="Verify Installation">
+        Test that the CLI is working:
+        
+        ```bash
+        parakeet-mlx --help
+        ```
+        
+        You should see the help message with all available options.
+      </Step>
+    </Steps>
+
+    <Check>
+    Using `uv` provides faster installation times and better dependency resolution compared to pip.
+    </Check>
+  </Tab>
+
+  <Tab title="pip">
+    ### Using pip
+
+    Install Parakeet MLX using Python's standard package manager:
+
+    <Steps>
+      <Step title="Install Package">
+        ```bash
+        pip install parakeet-mlx -U
+        ```
+        
+        The `-U` flag upgrades to the latest version if you already have it installed.
+      </Step>
+
+      <Step title="Verify Installation">
+        Check that both the library and CLI are available:
+        
+        ```bash
+        # Test CLI
+        parakeet-mlx --help
+        
+        # Test Python import
+        python3 -c "from parakeet_mlx import from_pretrained; print('Success!')"
+        ```
+      </Step>
+    </Steps>
+
+    <Warning>
+    If you're using a virtual environment, make sure it's activated before installing:
+    ```bash
+    source venv/bin/activate  # or your venv activation command
+    pip install parakeet-mlx -U
+    ```
+    </Warning>
+  </Tab>
+
+  <Tab title="From Source">
+    ### Installing from Source
+
+    For development or to use the latest unreleased features:
+
+    <Steps>
+      <Step title="Clone Repository">
+        ```bash
+        git clone https://github.com/senstella/parakeet-mlx.git
+        cd parakeet-mlx
+        ```
+      </Step>
+
+      <Step title="Install in Development Mode">
+        Using pip:
+        ```bash
+        pip install -e .
+        ```
+        
+        Or with uv:
+        ```bash
+        uv pip install -e .
+        ```
+        
+        The `-e` flag installs in editable mode, so changes to the source code are immediately reflected.
+      </Step>
+
+      <Step title="Run Tests (Optional)">
+        If you want to contribute or verify your installation:
+        ```bash
+        # Install development dependencies
+        pip install -e ".[dev]"
+        
+        # Run tests
+        pytest
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Post-Installation Setup
+
+### Model Cache Directory
+
+By default, Parakeet MLX stores downloaded models in Hugging Face's cache directory (`~/.cache/huggingface/hub`). You can customize this location:
+
+<CodeGroup>
+```bash Environment Variable
+export HF_HOME="/path/to/your/cache"
+# Or more specifically:
+export HF_HUB_CACHE="/path/to/your/cache/hub"
+```
+
+```python Python API
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained(
+    "mlx-community/parakeet-tdt-0.6b-v3",
+    cache_dir="/path/to/your/cache"
+)
+```
+
+```bash CLI
+parakeet-mlx audio.mp3 --cache-dir /path/to/your/cache
+# Or set environment variable:
+export PARAKEET_CACHE_DIR="/path/to/your/cache"
+```
+</CodeGroup>
+
+<Note>
+Models are typically 600MB to 1.1GB in size. Ensure you have sufficient disk space in your cache directory.
+</Note>
+
+### Pre-downloading Models
+
+You can download models ahead of time to avoid delays during first use:
+
+```python
+from parakeet_mlx import from_pretrained
+
+# Download the default model
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+print("Model downloaded and ready!")
+```
+
+Or using the CLI:
+```bash
+# The model downloads automatically on first transcription
+parakeet-mlx --model mlx-community/parakeet-tdt-0.6b-v3 test.mp3
+```
+
+## Verification
+
+Test your installation with a quick transcription:
+
+<CodeGroup>
+```bash CLI Test
+# Create a test audio file (requires `say` command on macOS)
+say "Hello, this is a test of Parakeet MLX" -o test.aiff
+
+# Transcribe it
+parakeet-mlx test.aiff
+
+# Check the output
+cat test.srt
+```
+
+```python Python Test
+from parakeet_mlx import from_pretrained
+
+# Load model
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+print(f"Model loaded: {type(model).__name__}")
+
+# If you have a test audio file:
+# result = model.transcribe("test.wav")
+# print(result.text)
+```
+</CodeGroup>
+
+## Upgrading
+
+To upgrade to the latest version of Parakeet MLX:
+
+<CodeGroup>
+```bash uv
+# For CLI tool
+uv tool upgrade parakeet-mlx
+
+# For project dependency
+uv add parakeet-mlx -U
+```
+
+```bash pip
+pip install --upgrade parakeet-mlx
+```
+</CodeGroup>
+
+Check your current version:
+```bash
+pip show parakeet-mlx | grep Version
+```
+
+## Uninstallation
+
+To remove Parakeet MLX:
+
+<CodeGroup>
+```bash uv
+# Remove CLI tool
+uv tool uninstall parakeet-mlx
+
+# Remove from project
+uv remove parakeet-mlx
+```
+
+```bash pip
+pip uninstall parakeet-mlx
+```
+</CodeGroup>
+
+To also remove downloaded models:
+```bash
+rm -rf ~/.cache/huggingface/hub/models--mlx-community--parakeet*
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Command not found: parakeet-mlx" icon="circle-exclamation">
+    If the CLI isn't available after installation:
+    
+    1. Make sure your PATH includes pip's bin directory:
+       ```bash
+       echo $PATH | grep -q "$(python3 -m site --user-base)/bin" || \
+         echo 'export PATH="$(python3 -m site --user-base)/bin:$PATH"' >> ~/.zshrc
+       source ~/.zshrc
+       ```
+    
+    2. Try running with Python directly:
+       ```bash
+       python3 -m parakeet_mlx.cli --help
+       ```
+    
+    3. Reinstall with the `--force-reinstall` flag:
+       ```bash
+       pip install --force-reinstall parakeet-mlx
+       ```
+  </Accordion>
+
+  <Accordion title="Import Error: No module named 'mlx'" icon="circle-exclamation">
+    This usually means MLX isn't compatible with your system. Parakeet MLX requires:
+    
+    - Apple Silicon Mac (M1 or later)
+    - macOS 13.0 or newer
+    
+    Verify your system:
+    ```bash
+    # Check processor
+    sysctl -n machdep.cpu.brand_string
+    
+    # Check macOS version
+    sw_vers
+    ```
+    
+    If you have an Intel Mac, Parakeet MLX won't work. Consider using alternatives like OpenAI Whisper.
+  </Accordion>
+
+  <Accordion title="FFmpeg not found" icon="circle-exclamation">
+    If you get an error about ffmpeg when using the CLI:
+    
+    ```bash
+    # Install ffmpeg
+    brew install ffmpeg
+    
+    # Verify it's in your PATH
+    which ffmpeg
+    ```
+    
+    If Homebrew isn't installed:
+    ```bash
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    ```
+  </Accordion>
+
+  <Accordion title="Out of Memory Errors" icon="circle-exclamation">
+    If you encounter memory issues with large audio files or models:
+    
+    1. **Use chunking** for long audio:
+       ```bash
+       parakeet-mlx long_audio.mp3 --chunk-duration 120
+       ```
+    
+    2. **Enable local attention**:
+       ```bash
+       parakeet-mlx long_audio.mp3 --local-attention
+       ```
+    
+    3. **Use a smaller model**:
+       ```bash
+       parakeet-mlx audio.mp3 --model mlx-community/parakeet-ctc-0.6b
+       ```
+    
+    4. **Close other applications** to free up memory
+  </Accordion>
+
+  <Accordion title="Slow First Run" icon="circle-exclamation">
+    The first transcription will be slower because:
+    
+    1. **Model download**: Models are 600MB-1.1GB and download on first use
+    2. **MLX compilation**: The first forward pass compiles optimized kernels
+    
+    This is normal and only happens once. Subsequent transcriptions will be much faster.
+    
+    Monitor download progress:
+    ```bash
+    parakeet-mlx audio.mp3 --verbose
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Quick Start Guide"
+    icon="bolt"
+    href="/quickstart"
+  >
+    Run your first transcription in under 2 minutes
+  </Card>
+  <Card
+    title="Python API Reference"
+    icon="code"
+    href="/api/python-api"
+  >
+    Integrate Parakeet MLX into your Python applications
+  </Card>
+</CardGroup>
