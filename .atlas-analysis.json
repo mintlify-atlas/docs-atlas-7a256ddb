@@ -1,0 +1,121 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "Parakeet MLX",
+  "projectDescription": "An implementation of Nvidia's Parakeet ASR models for Apple Silicon using MLX.",
+  "theme": "aspen",
+  "primaryColor": "#007AFF",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/models",
+              "concepts/decoding",
+              "concepts/timestamps"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/cli-usage",
+              "guides/python-api",
+              "guides/streaming",
+              "guides/chunking",
+              "guides/output-formats"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/local-attention",
+              "advanced/beam-decoding",
+              "advanced/sentence-splitting",
+              "advanced/low-level-api"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Models",
+            "pages": [
+              "api/from-pretrained",
+              "api/base-parakeet",
+              "api/parakeet-tdt",
+              "api/parakeet-rnnt",
+              "api/parakeet-ctc"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "api/decoding-config",
+              "api/sentence-config"
+            ]
+          },
+          {
+            "group": "Results",
+            "pages": [
+              "api/aligned-result",
+              "api/aligned-sentence",
+              "api/aligned-token"
+            ]
+          },
+          {
+            "group": "Audio Processing",
+            "pages": [
+              "api/audio-utils"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Multiple Parakeet model variants (TDT, RNNT, CTC)",
+    "CLI tool for audio transcription",
+    "Python API for programmatic use",
+    "Real-time streaming transcription",
+    "Word-level timestamps and alignments",
+    "Multiple output formats (txt, srt, vtt, json)",
+    "Beam and greedy decoding strategies",
+    "Chunking for long audio files",
+    "Local attention for memory efficiency",
+    "Optimized for Apple Silicon using MLX"
+  ],
+  "publicApiSurface": [
+    "from_pretrained()",
+    "BaseParakeet.transcribe()",
+    "BaseParakeet.transcribe_stream()",
+    "BaseParakeet.generate()",
+    "ParakeetTDT",
+    "ParakeetRNNT",
+    "ParakeetCTC",
+    "ParakeetTDTCTC",
+    "DecodingConfig",
+    "SentenceConfig",
+    "Beam",
+    "Greedy",
+    "AlignedResult",
+    "AlignedSentence",
+    "AlignedToken",
+    "load_audio()",
+    "get_logmel()",
+    "parakeet-mlx CLI command"
+  ]
+}
