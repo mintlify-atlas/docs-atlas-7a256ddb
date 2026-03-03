@@ -1,0 +1,108 @@
+---
+title: ParakeetTDTCTC
+description: Hybrid TDT-CTC model combining TDT and CTC decoders
+---
+
+## Overview
+
+`ParakeetTDTCTC` is a hybrid model that combines both Token-and-Duration Transducer (TDT) and Connectionist Temporal Classification (CTC) decoders. It inherits all functionality from `ParakeetTDT` but includes an additional CTC decoder for auxiliary training objectives.
+
+<Note>
+The `.generate()` method uses the TDT decoder by default. The CTC decoder is available via `.ctc_decoder` for specialized use cases.
+</Note>
+
+## Class Definition
+
+```python
+class ParakeetTDTCTC(ParakeetTDT)
+```
+
+Defined in `parakeet.py:909-918`
+
+## Inheritance
+
+ParakeetTDTCTC inherits all methods from [ParakeetTDT](/api/parakeet-tdt):
+- `transcribe()`
+- `transcribe_stream()`
+- `generate()`
+- `decode()`
+
+See [ParakeetTDT documentation](/api/parakeet-tdt) for details on these methods.
+
+## Additional Properties
+
+### ctc_decoder
+
+<ResponseField name="ctc_decoder" type="ConvASRDecoder">
+  CTC decoder component for auxiliary training objectives. This decoder is separate from the main TDT decoder and is primarily used during training.
+</ResponseField>
+
+```python
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-ctc-variant")
+
+# Access CTC decoder if needed
+ctc_decoder = model.ctc_decoder
+```
+
+## Usage
+
+ParakeetTDTCTC models are used identically to ParakeetTDT models:
+
+```python
+from parakeet_mlx import from_pretrained
+
+# Load a TDT-CTC model
+model = from_pretrained("mlx-community/parakeet-tdt-ctc-model")
+
+# Transcribe (uses TDT decoder)
+result = model.transcribe("audio.wav")
+print(result.text)
+```
+
+<Info>
+**Why use TDT-CTC?** The hybrid architecture allows for multi-task learning during training, potentially improving accuracy. At inference time, you get all the benefits of TDT decoding (beam search, duration modeling) with the robustness from CTC auxiliary training.
+</Info>
+
+## Architecture
+
+The TDT-CTC model includes:
+
+1. **Shared Conformer Encoder** - Processes audio into features
+2. **TDT Decoder** (primary) - Autoregressive decoder with duration modeling
+3. **Joint Network** - Combines encoder and decoder outputs
+4. **CTC Decoder** (auxiliary) - Non-autoregressive CTC head
+
+During inference, only the TDT path (encoder → decoder → joint → tokens) is used by default.
+
+## Model Variants
+
+Check Hugging Face for available TDT-CTC models:
+
+```python
+# Example TDT-CTC model (check https://huggingface.co/mlx-community for actual models)
+model = from_pretrained("mlx-community/parakeet-tdt-ctc-variant")
+```
+
+<Warning>
+If you need to use the CTC decoder directly for inference, please open an issue on the [GitHub repository](https://github.com/senstella/parakeet-mlx/issues). The current implementation defaults to TDT decoding.
+</Warning>
+
+## Comparison with Other Models
+
+| Feature | TDT-CTC | TDT | CTC |
+|---------|---------|-----|-----|
+| Beam search | ✅ Yes | ✅ Yes | ❌ No |
+| Duration modeling | ✅ Yes | ✅ Yes | ❌ No |
+| CTC auxiliary | ✅ Yes | ❌ No | N/A |
+| Speed | Fast | Fast | Fastest |
+| Streaming | ✅ Yes | ✅ Yes | ✅ Yes |
+
+## Related
+
+- [ParakeetTDT](/api/parakeet-tdt) - Parent class with full TDT functionality
+- [ParakeetCTC](/api/parakeet-ctc) - Pure CTC variant
+- [BaseParakeet](/api/base-parakeet) - Common interface and methods
+- [DecodingConfig](/api/decoding-config) - Configure beam search and decoding
+- [Models Concept](/concepts/models) - Understanding model architectures

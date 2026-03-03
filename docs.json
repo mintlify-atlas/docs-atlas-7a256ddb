@@ -70,7 +70,8 @@
               "api/base-parakeet",
               "api/parakeet-tdt",
               "api/parakeet-rnnt",
-              "api/parakeet-ctc"
+              "api/parakeet-ctc",
+              "api/parakeet-tdtctc"
             ]
           },
           {
